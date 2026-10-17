@@ -276,3 +276,22 @@ FFprobeのSkipSamples、ファイルの物理先頭パケットとOSが返す先
 最終配布候補DLLのSHA256は `7b03feb2801fbc58867211c2cac81b96bc2da1c1d566de68974756673c5ab24c` です。
 
 根拠：`build/github-ci-failure-3.log`、`github-ci-failure-4.log`、`aac-reader-win11.json`、`aac-clock-local-regression.log`、`aac-clock-core-ctest.log`、`github-aac-clock-ci.log`、`github-green-core/public-ci-summary.json`、`aac-trim-regression.log`、`aac-clock-sdk-build.log`。
+
+## 最終配布DLLと検証スクリプトの再確認（2026-10-17）
+
+最終配布候補DLLを通常の登録先へ更新し、新しい専用ウィンドウで試験しました。
+最初の試験は長いキャッシュ先でWAV一時ファイルのパス長制約に当たり、同じプロセスで再試験した際はStory 36項目後にヒープ破損が検出されました。
+ダンプではMotionBuilder内部のメモリ解放時に検出されており、破壊を書き込んだ場所は特定できていません。
+
+調査で、検証スクリプトのOpenGL画像取得がホストのPACK設定・PBOを正規化せず、確保したCPUバッファを超えて書き込む可能性があることを確認しました。
+PACK設定と結合を退避し、読取用に正規化して例外時も復元するよう修正しました。
+非既定の行長・スキップ・PBOを使う回帰は修正前に失敗し、修正後は7項目すべて成功しています。通常CIとリリースCIでも実行します。
+この修正は検証コードのみで、製品DLLの変更はありません。先のヒープ破損の原因と確定したものではありません。
+
+その後、短いキャッシュ先と修正した検証スクリプトを使い、別の新しい専用ウィンドウで再試験しました。
+通常設定からの自動ロードと上記SHA256の一致を確認し、Story 58項目、映像と音声の長さが異なるMP4の8入力596項目がすべて成功しました。
+実音声出力、映像表示、移動・速度変更・トリム・Mute、キャッシュを使った保存・再読込、各トラックの独立した終端を確認し、検証シーンを保存しました。
+この試験で採取したPACK設定は既定値・PBO未結合であり、前のプロセスの状態は未取得です。
+既存の2つのMotionBuilderは終了・再起動せず、マウス・キー入力なしで新しい検証ウィンドウを開いたままにしています。
+
+根拠：`artifacts/final/independent-audit.json`、`final/crash/offline-stack.log`、`fresh/host-results.json`、`fresh/story-results.json`、`fresh/ends/track-ends-results.json`、`fresh/verified-story.fbx`、`build/gl-readback-ci-contract.json`。

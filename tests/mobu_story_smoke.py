@@ -6,6 +6,7 @@ import json
 import math
 import os
 from pathlib import Path
+import runpy
 import shutil
 import subprocess
 import struct
@@ -80,6 +81,8 @@ gl.glBindTexture.argtypes = [ctypes.c_uint, ctypes.c_uint]
 gl.glGetTexImage.argtypes = [ctypes.c_uint, ctypes.c_int, ctypes.c_uint, ctypes.c_uint, ctypes.c_void_p]
 gl.glGetTexLevelParameteriv.argtypes = [ctypes.c_uint, ctypes.c_int, ctypes.c_uint, ctypes.POINTER(ctypes.c_int)]
 gl.glGetIntegerv.argtypes = [ctypes.c_uint, ctypes.POINTER(ctypes.c_int)]
+TextureReader = runpy.run_path(str(Path(__file__).resolve().with_name('gl_readback.py')))['TextureReader']
+texture_reader = TextureReader(gl)
 
 
 def save():
@@ -118,22 +121,7 @@ def find_track(name, kind):
 
 
 def pixels(video):
-    texture_id = video.GetTextureID()
-    result = {'gl_id': texture_id}
-    if texture_id and gl.glIsTexture(texture_id):
-        prior, width, height = ctypes.c_int(), ctypes.c_int(), ctypes.c_int()
-        gl.glGetIntegerv(0x8069, ctypes.byref(prior))
-        gl.glBindTexture(0x0DE1, texture_id)
-        gl.glGetTexLevelParameteriv(0x0DE1, 0, 0x1000, ctypes.byref(width))
-        gl.glGetTexLevelParameteriv(0x0DE1, 0, 0x1001, ctypes.byref(height))
-        result.update(width=width.value, height=height.value)
-        if 0 < width.value < 4096 and 0 < height.value < 4096:
-            data = (ctypes.c_ubyte * (width.value * height.value * 4))()
-            gl.glGetTexImage(0x0DE1, 0, 0x80E1, 0x1401, data)
-            center = (height.value // 2 * width.value + width.value // 2) * 4
-            result['bgra'] = list(data[center:center + 4])
-        gl.glBindTexture(0x0DE1, prior.value)
-    return result
+    return texture_reader.read(video.GetTextureID())
 
 
 def render(sender, event):

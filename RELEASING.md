@@ -10,6 +10,7 @@ CIはGitHub-hostedの `windows-2022` で動き、MotionBuilder SDKやセルフ�
 `.github/workflows/ci.yml` はPR・ブランチ更新・手動実行に対応します。
 日本語と空白を含むフォルダへcheckoutし、その配置でビルドとテストを行います。
 SDKを使わずにネイティブメディア処理をビルドし、動画・音声、導入・解除PS1、配布物、公開ソース、リリース入力を検証します。
+実ホスト試験のOpenGL画像取得についても、非既定のPACK設定・PBO・例外時の状態復元をPythonの回帰テストで検証します。
 Python 3.10以降・FFmpeg・FFprobeを必須とし、比較テストを省略しません。
 
 GitHub-hostedのCoreジョブでだけ、不足するFFmpeg / FFprobeを固定バージョンとSHA256で検証して取得します。

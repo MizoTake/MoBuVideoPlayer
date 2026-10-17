@@ -65,6 +65,8 @@ jobs:
           $media = Get-WindowsFeature -Name Server-Media-Foundation
           $media | Select-Object Name, Installed, InstallState | ConvertTo-Json -Compress
           if (-not $media.Installed) { throw 'Windows Server Media Foundation is still unavailable.' }
+      - name: Verify OpenGL readback memory and host state boundaries
+        run: python -m unittest discover -s tests -p test_gl_readback.py -v
       - name: Build and test the native media code without the proprietary SDK
         run: ./scripts/ci-build.ps1 -Mode Core -BuildDirectory build/ci-core -PrepareHostedTools
       - name: Download the exact local DLL and provenance assets

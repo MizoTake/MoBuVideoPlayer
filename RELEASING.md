@@ -50,7 +50,7 @@ CIと同じパッケージ処理をローカルで実行できます。
 
 ## GitHubでのリリース手順
 
-1. CMakeLists.txtの版数と `docs/releases/<版数>.md`、README、検証記録を揃えます。
+1. CMakeLists.txtの版数と `docs/releases/<版数>.md`、検証記録を揃えます。配布版の表示はGitタグとReleaseにまとめ、READMEに製品の固定版数は書きません。
 2. 上記の検査・入力準備を実行し、公開対象のソースをコミットします。
 3. 公開先が決まったらリポジトリとoriginを用意し、ソースと版数タグをpushします。
 4. 同じタグのDraft Releaseを作り、DLLとJSONの2点を添付します。

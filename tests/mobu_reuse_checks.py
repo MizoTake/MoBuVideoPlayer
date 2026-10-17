@@ -4,6 +4,7 @@ import builtins
 import hashlib
 import json
 from pathlib import Path
+import re
 import time
 import traceback
 
@@ -32,6 +33,43 @@ def copy_time(value):
 
 def digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def current_cache_revision(source_root=ROOT):
+    source = source_root / 'src' / 'media' / 'MediaCache.cpp'
+    revisions = re.findall(r'^\s*constexpr\s+unsigned\s+CacheRevision\s*=\s*(\d+)\s*;',
+                           source.read_text(encoding='utf-8'), re.MULTILINE)
+    if len(revisions) != 1 or int(revisions[0]) <= 0:
+        raise RuntimeError('Cannot determine the unique media cache revision from MediaCache.cpp')
+    return int(revisions[0])
+
+
+def prepared_audio_cache(cache_root, source, revision):
+    source_hash = digest(source)
+    directory = cache_root / ('v' + str(revision) + '-' + source_hash + '-a')
+    audio = directory / ('a' + str(revision) + '-' + source_hash + '-raw.wav')
+    try:
+        records = [line.split() for line in (directory / 'complete.txt').read_text(encoding='utf-8').splitlines()]
+        if (len(records) != 6 or records[0] != ['NativeMediaCache', str(revision), source_hash]
+                or records[1] != ['0', '1', '0', '0', '0']
+                or len(records[2]) != 6 or len(records[3]) != 5
+                or len(records[4]) != 9 or len(records[5]) != 2):
+            raise ValueError('Cache revision, source hash, or raw audio options do not match')
+        source_info = [int(value) for value in records[2]]
+        video_info = [int(value) for value in records[3]]
+        audio_info = [int(value) for value in records[4]]
+        if (any(value < 0 for value in source_info) or video_info[2] != 0
+                or audio_info[0] != 1 or audio_info[5] <= 0 or audio_info[7] <= 0
+                or audio_info[8] not in (0, 1)):
+            raise ValueError('Cache does not contain complete audio-only media')
+        size, audio_hash = records[5]
+        if (not audio.is_file() or audio.stat().st_size != int(size)
+                or not re.fullmatch(r'[0-9a-f]{64}', audio_hash) or digest(audio) != audio_hash):
+            raise ValueError('Cached WAV size or content does not match its manifest')
+    except (OSError, ValueError) as error:
+        raise RuntimeError('Prepare the current standard audio cache before reuse validation: '
+                           + source.name + ' (revision ' + str(revision) + '): ' + str(error)) from error
+    return audio
 
 
 class ExistingHostChecks:
@@ -131,12 +169,11 @@ class ExistingHostChecks:
         }
         media = {}
         cache_root = ROOT / 'artifacts' / 'story-host-smoke' / 'NativeVideoMedia'
+        revision = current_cache_revision()
+        self.report['cache_revision'] = revision
         for name in NAMES:
             source = ROOT / 'build' / 'audio-fixtures' / (name + '.wav')
-            source_hash = digest(source)
-            cache = cache_root / ('v4-' + source_hash + '-a') / ('a4-' + source_hash + '-raw.wav')
-            if not cache.is_file():
-                raise RuntimeError('Prepare the standard audio cache before reuse validation: ' + name)
+            cache = prepared_audio_cache(cache_root, source, revision)
             media[name] = cache
             self.expected_hashes[name] = digest(cache)
         self.folder = FBStoryFolder(self.story.RootFolder)

@@ -164,13 +164,21 @@ std::vector<TimingRun> ParseTiming(std::span<const BYTE> payload, bool compositi
         if (!count || total > (std::numeric_limits<std::uint32_t>::max)()) {
             throw std::runtime_error("The MP4 sample timing count exceeds the track sample limit.");
         }
+        if (!composition && !value) {
+            throw std::runtime_error("The MP4 sample duration must be positive.");
+        }
         runs.push_back({count, composition && payload[0] == 1
             ? static_cast<std::int64_t>(static_cast<std::int32_t>(value)) : value});
     }
     return runs;
 }
 
-std::optional<std::int64_t> FirstCompositionTime(std::span<const BYTE> decode,
+struct CompositionInterval {
+    std::int64_t first = 0;
+    std::int64_t end = 0;
+};
+
+std::optional<CompositionInterval> CompositionTimes(std::span<const BYTE> decode,
     std::span<const BYTE> composition)
 {
     if (decode.empty()) {
@@ -198,21 +206,29 @@ std::optional<std::int64_t> FirstCompositionTime(std::span<const BYTE> decode,
     std::uint64_t decodeRemaining = decodeRuns[0].count;
     std::uint64_t compositionRemaining = compositionRuns[0].count;
     std::uint64_t decodeTime = 0;
-    std::optional<std::int64_t> first;
+    std::optional<CompositionInterval> interval;
     while (decodeIndex < decodeRuns.size() && compositionIndex < compositionRuns.size()) {
-        const auto offset = compositionRuns[compositionIndex].value;
-        if (decodeTime > static_cast<std::uint64_t>((std::numeric_limits<std::int64_t>::max)())
-                || (offset > 0 && decodeTime > static_cast<std::uint64_t>((std::numeric_limits<std::int64_t>::max)() - offset))) {
-            throw std::runtime_error("The MP4 composition timestamp exceeds the supported sample time range.");
-        }
-        const auto candidate = static_cast<std::int64_t>(decodeTime) + offset;
-        first = first ? (std::min)(*first, candidate) : candidate;
         const auto count = (std::min)(decodeRemaining, compositionRemaining);
         const auto delta = static_cast<std::uint64_t>(decodeRuns[decodeIndex].value);
-        if (delta && count > ((std::numeric_limits<std::uint64_t>::max)() - decodeTime) / delta) {
+        const auto limit = static_cast<std::uint64_t>((std::numeric_limits<std::int64_t>::max)());
+        if (decodeTime > limit || count > (limit - decodeTime) / delta) {
             throw std::runtime_error("The MP4 decode time exceeds the supported sample time range.");
         }
-        decodeTime += count * delta;
+        const auto decodeEnd = decodeTime + count * delta;
+        const auto offset = compositionRuns[compositionIndex].value;
+        if (offset > 0 && decodeEnd > limit - static_cast<std::uint64_t>(offset)) {
+            throw std::runtime_error("The MP4 composition timestamp exceeds the supported sample time range.");
+        }
+        const auto first = static_cast<std::int64_t>(decodeTime) + offset;
+        const auto end = static_cast<std::int64_t>(decodeEnd) + offset;
+        if (interval) {
+            // Decode duration alone misses a later presentation end when composition offsets reorder samples.
+            interval->first = (std::min)(interval->first, first);
+            interval->end = (std::max)(interval->end, end);
+        } else {
+            interval = CompositionInterval{first, end};
+        }
+        decodeTime = decodeEnd;
         decodeRemaining -= count;
         compositionRemaining -= count;
         if (!decodeRemaining && ++decodeIndex < decodeRuns.size()) {
@@ -222,7 +238,7 @@ std::optional<std::int64_t> FirstCompositionTime(std::span<const BYTE> decode,
             compositionRemaining = compositionRuns[compositionIndex].count;
         }
     }
-    return first;
+    return interval;
 }
 
 PresentationTimeline ParseMovie(std::span<const BYTE> payload)
@@ -291,12 +307,12 @@ PresentationTimeline ParseMovie(std::span<const BYTE> payload)
             }
             timeline = ParseEdits(edit, movieScale, mediaScale);
         }
-        const auto firstComposition = FirstCompositionTime(decode, composition);
-        if (firstComposition) {
+        const auto compositionTimes = CompositionTimes(decode, composition);
+        if (compositionTimes) {
             if (!mediaScale) {
                 throw std::runtime_error("The MP4 sample timing is missing its media time scale.");
             }
-            const auto firstTicks = TimelineTicks(static_cast<long double>(*firstComposition) * 10000000.0L / mediaScale);
+            const auto firstTicks = TimelineTicks(static_cast<long double>(compositionTimes->first) * 10000000.0L / mediaScale);
             const auto firstMovie = TimelineTicks(static_cast<long double>(firstTicks) + timeline.offset100ns);
             if (video && timeline.hasEdit) {
                 const auto version = edit[0];
@@ -305,11 +321,14 @@ PresentationTimeline ParseMovie(std::span<const BYTE> payload)
                 const auto mediaStart = version == 1 ? static_cast<std::int64_t>(Read64(edit, position + 8))
                     : static_cast<std::int32_t>(Read32(edit, position + 4));
                 // The OS source can expose preroll with a different PTS origin, so a guessed trim would lose sync.
-                if (mediaStart > *firstComposition) {
+                if (mediaStart > compositionTimes->first) {
                     throw std::runtime_error("This MP4 trims initial video samples with an edit list; its A/V timing cannot be preserved.");
                 }
             }
             timeline.firstPresentation100ns = firstMovie;
+            if (!timeline.hasEdit) {
+                timeline.end100ns = TimelineTicks(static_cast<long double>(compositionTimes->end) * 10000000.0L / mediaScale);
+            }
         } else if (video && timeline.hasEdit) {
             throw std::runtime_error("The edited MP4 video has no static sample timing table; its A/V timing cannot be preserved.");
         }

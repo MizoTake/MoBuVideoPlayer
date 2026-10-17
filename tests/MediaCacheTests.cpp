@@ -95,6 +95,41 @@ int wmain(int argc, wchar_t** argv) {
                 "delayed B-frame video is placed half a second after movie zero");
             expect(av.audio.frameCount == 48000 && av.audio.duration100ns == 10'000'000,
                 "Story preserves the audio before the first video frame");
+            const auto audioFixtures = std::filesystem::path(argv[3]);
+            std::ifstream boundaries(audioFixtures / "track-ends.tsv");
+            std::string marker;
+            unsigned version = 0;
+            if (!(boundaries >> marker >> version) || marker != "track_ends" || version != 1) {
+                throw std::runtime_error("The independent track-boundary fixtures are missing.");
+            }
+            std::string filename;
+            std::int64_t first = 0;
+            std::int64_t duration = 0;
+            std::uint64_t frames = 0;
+            bool variable = false;
+            std::uint64_t audioFrames = 0;
+            std::int64_t audioDuration = 0;
+            unsigned cases = 0;
+            while (boundaries >> filename >> first >> duration >> frames >> variable >> audioFrames >> audioDuration) {
+                const auto result = mobu::media::PrepareMediaCache(audioFixtures / filename, root, movie);
+                std::cout << "track boundary: " << filename << " video=" << result.video.duration100ns
+                    << " frames=" << result.video.frameCount << " audio=" << result.audio.duration100ns << '\n';
+                expect(result.videoStart100ns == first, "Story keeps the independent video presentation start");
+                expect(result.video.duration100ns == duration, "Story ends video at its own boundary with and without edit lists");
+                if (frames) {
+                    expect(result.video.frameCount == frames, "Story does not append video frames to match a longer audio track");
+                } else {
+                    const auto numerator = static_cast<std::uint64_t>(duration) * result.video.frameRateNumerator;
+                    const auto denominator = 10'000'000ULL * result.video.frameRateDenominator;
+                    expect(result.video.frameCount == (numerator + denominator - 1) / denominator,
+                        "Story resamples VFR only through the independent video boundary");
+                }
+                expect(result.video.variableFrameRateResampled == variable, "Story reports the source frame-timing policy");
+                expect(result.audio.frameCount == audioFrames && result.audio.duration100ns == audioDuration,
+                    "Story keeps every audio sample independent of the video end");
+                ++cases;
+            }
+            expect(boundaries.eof() && cases == 8, "All edit-list and no-edit-list track-boundary fixtures were checked");
         }
         std::cout << "PASS " << checks << " cache checks\n";
         return 0;

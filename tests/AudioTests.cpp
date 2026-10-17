@@ -16,7 +16,9 @@ int wmain(int argc, wchar_t** argv)
                       << ",\"audioEnd100ns\":" << timeline.audio.end100ns.value_or(-1)
                       << ",\"videoEnd100ns\":" << timeline.video.end100ns.value_or(-1)
                       << ",\"audioFirst100ns\":" << timeline.audio.firstPresentation100ns.value_or(-1)
-                      << ",\"videoFirst100ns\":" << timeline.video.firstPresentation100ns.value_or(-1) << "}\n";
+                      << ",\"videoFirst100ns\":" << timeline.video.firstPresentation100ns.value_or(-1)
+                      << ",\"audioHasEdit\":" << (timeline.audio.hasEdit ? "true" : "false")
+                      << ",\"videoHasEdit\":" << (timeline.video.hasEdit ? "true" : "false") << "}\n";
             return EXIT_SUCCESS;
         }
         if (argc == 3 && std::wstring(argv[1]) == L"--video-origin") {

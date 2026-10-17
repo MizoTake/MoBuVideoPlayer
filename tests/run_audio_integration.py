@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import array
+from fractions import Fraction
 import json
 import math
 import os
@@ -12,6 +13,8 @@ from pathlib import Path
 import struct
 import subprocess
 import sys
+
+from run_decoder_integration import generate_cfr, generate_vfr
 
 
 def execute(command: list[str], *, check: bool = True) -> subprocess.CompletedProcess[bytes]:
@@ -109,6 +112,134 @@ def synthetic_timing(decode: list[tuple[int, int]], composition: list[tuple[int,
                                    + struct.pack(">IiI", 1000, media_start, 65536)))
     movie = atom(b"mvhd", bytes(12) + struct.pack(">I", 1000) + bytes(8)) + atom(b"trak", track)
     return atom(b"ftyp", b"isom" + bytes(4) + b"isom") + atom(b"moov", movie)
+
+
+def ticks_from_fraction(value: Fraction) -> int:
+    scaled = value * 10_000_000
+    return (scaled.numerator * 2 + scaled.denominator) // (scaled.denominator * 2)
+
+
+def mp4_boxes(data: bytes):
+    position = 0
+    while position + 8 <= len(data):
+        size, tag = struct.unpack_from(">I4s", data, position)
+        assert 8 <= size <= len(data) - position
+        yield tag, data[position + 8:position + size]
+        position += size
+    assert position == len(data)
+
+
+def edit_list_count(data: bytes) -> int:
+    count = 0
+    for tag, payload in mp4_boxes(data):
+        if tag == b"elst":
+            count += 1
+        elif tag in (b"moov", b"trak", b"edts"):
+            count += edit_list_count(payload)
+    return count
+
+
+def edit_list_ends(data: bytes) -> dict[bytes, int]:
+    movie = next(payload for tag, payload in mp4_boxes(data) if tag == b"moov")
+    header = next(payload for tag, payload in mp4_boxes(movie) if tag == b"mvhd")
+    scale = struct.unpack_from(">I", header, 20 if header[0] else 12)[0]
+    result = {}
+    for tag, track in mp4_boxes(movie):
+        if tag != b"trak":
+            continue
+        handler = edits = None
+        for child_tag, child in mp4_boxes(track):
+            if child_tag == b"mdia":
+                handler = next(payload[8:12] for name, payload in mp4_boxes(child) if name == b"hdlr")
+            elif child_tag == b"edts":
+                edits = next((payload for name, payload in mp4_boxes(child) if name == b"elst"), None)
+        if edits is not None:
+            count = struct.unpack_from(">I", edits, 4)[0]
+            size, format_code = (20, ">Q") if edits[0] else (12, ">I")
+            total = sum(struct.unpack_from(format_code, edits, 8 + index * size)[0] for index in range(count))
+            result[handler] = ticks_from_fraction(Fraction(total, scale))
+    return result
+
+
+def generate_track_end_fixtures(ffmpeg: str, ffprobe: str, directory: Path) -> list[dict]:
+    short_video = directory / "track-ends-short-video.mp4"
+    encoder = "h264_nvenc"
+    result = generate_cfr(ffmpeg, short_video, encoder, 192, 128, 6, 12, 0, check=False)
+    if result.returncode:
+        encoder = "libx264"
+        generate_cfr(ffmpeg, short_video, encoder, 192, 128, 6, 12, 0)
+    long_video = directory / "track-ends-long-video.mp4"
+    bframe_video = directory / "track-ends-bframe-video.mp4"
+    generate_cfr(ffmpeg, long_video, encoder, 192, 128, 6, 18, 0)
+    generate_cfr(ffmpeg, bframe_video, encoder, 192, 128, 6, 12, 2)
+    vfr_directory = directory / "track-ends-vfr-source"
+    vfr_directory.mkdir(exist_ok=True)
+    vfr_video = generate_vfr(ffmpeg, vfr_directory, encoder)
+    tones = {}
+    for seconds in (2, 3):
+        tone = directory / f"track-ends-tone-{seconds}.aac"
+        execute([ffmpeg, "-v", "error", "-y", "-f", "lavfi", "-i",
+                 f"sine=frequency=440:sample_rate=48000:duration={seconds}",
+                 "-c:a", "aac", "-b:a", "128k", "-f", "adts", str(tone)])
+        tones[seconds] = tone
+    references = []
+    for name, source, seconds, frame_count, variable in (
+            ("cfr-audio-tail", short_video, 3, 12, False),
+            ("cfr-video-tail", long_video, 2, 18, False),
+            ("bframe-audio-tail", bframe_video, 3, 12, False),
+            ("vfr-audio-tail", vfr_video, 3, 0, True)):
+        for edited in (False, True):
+            filename = f"track-ends-{name}-{'edit' if edited else 'noedit'}.mp4"
+            path = directory / filename
+            execute([ffmpeg, "-v", "error", "-y", "-i", str(source), "-i", str(tones[seconds]),
+                     "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "copy",
+                     "-bsf:a", "aac_adtstoasc", "-use_editlist", str(int(edited)), str(path)])
+            probe_command = [ffprobe, "-v", "error", "-show_streams", "-of", "json", str(path)]
+            stream_info = json.loads(execute(probe_command).stdout)["streams"]
+            video = next(stream for stream in stream_info if stream["codec_type"] == "video")
+            audio = next(stream for stream in stream_info if stream["codec_type"] == "audio")
+            start = Fraction(int(video["start_pts"])) * Fraction(video["time_base"])
+            duration = Fraction(int(video["duration_ts"])) * Fraction(video["time_base"])
+            audio_end = Fraction(int(audio["start_pts"]) + int(audio["duration_ts"])) * Fraction(audio["time_base"])
+            reference_command = [ffmpeg, "-v", "error", "-i", str(path), "-map", "0:a:0",
+                                 "-af", "aresample=async=1:first_pts=0", "-f", "s16le", "-c:a", "pcm_s16le", "pipe:1"]
+            pcm = execute(reference_command).stdout
+            reference_name = filename + ".timeline.pcm"
+            (directory / reference_name).write_bytes(pcm)
+            audio_frames = len(pcm) // (2 * int(audio["channels"]))
+            frame_command = [ffprobe, "-v", "error", "-select_streams", "a:0", "-show_frames",
+                             "-show_entries", "frame=pts,nb_samples", "-of", "json", str(path)]
+            decoded_frames = json.loads(execute(frame_command).stdout)["frames"]
+            gaps = []
+            cursor = 0
+            for frame in decoded_frames:
+                position = Fraction(int(frame["pts"])) * Fraction(audio["time_base"]) * int(audio["sample_rate"])
+                assert position.denominator == 1
+                position = int(position)
+                if position > cursor:
+                    gaps.append({"start_frame": cursor, "frames": position - cursor})
+                cursor = max(cursor, position + int(frame["nb_samples"]))
+            edit_ends = edit_list_ends(path.read_bytes())
+            video_first_ticks = ticks_from_fraction(start)
+            video_end_ticks = edit_ends.get(b"vide", ticks_from_fraction(start + duration))
+            references.append({"file": filename, "edited": edited, "encoder": encoder,
+                               "video_first": video_first_ticks, "video_end": video_end_ticks,
+                               "video_duration": video_end_ticks - video_first_ticks, "video_frames": frame_count,
+                               "variable": variable, "audio_frames": audio_frames,
+                               "audio_duration": ticks_from_fraction(Fraction(audio_frames, int(audio["sample_rate"]))),
+                               "audio_end": edit_ends.get(b"soun", ticks_from_fraction(audio_end)), "audio_rate": int(audio["sample_rate"]),
+                               "audio_channels": int(audio["channels"]), "b_frames": int(video.get("has_b_frames", 0)),
+                               "edit_lists": edit_list_count(path.read_bytes()), "audio_gaps": gaps,
+                               "audio_reference_file": reference_name, "audio_reference_command": reference_command,
+                               "stream_reference_command": probe_command, "gap_reference_command": frame_command,
+                               "end_reference": "elst segment-duration sum / movie time scale" if edited else "FFprobe stream start_pts + duration_ts at stream time_base"})
+    rows = ["track_ends\t1"]
+    for item in references:
+        rows.append("\t".join(map(str, (item["file"], item["video_first"], item["video_duration"],
+                                       item["video_frames"], int(item["variable"]), item["audio_frames"], item["audio_duration"]))))
+    (directory / "track-ends.tsv").write_text("\n".join(rows) + "\n", encoding="utf-8", newline="\n")
+    (directory / "track-ends-reference.json").write_text(json.dumps(references, indent=2) + "\n", encoding="utf-8", newline="\n")
+    return references
 
 
 def main() -> int:
@@ -342,6 +473,57 @@ def main() -> int:
         require(retained.returncode != 0 and destination.read_bytes() == sentinel,
                 "existing destination is never overwritten")
         require(not list(directory.glob("*.partial.*")), "all completed operations leave no partial files")
+        track_references = generate_track_end_fixtures(args.ffmpeg, args.ffprobe, directory)
+        for item in track_references:
+            name = item["file"]
+            source = directory / name
+            require((item["edit_lists"] > 0) == item["edited"], name + " has the requested edit-list structure")
+            require(not name.startswith("track-ends-bframe") or item["b_frames"] > 0,
+                    name + " retains its encoded frame structure")
+            timeline = json.loads(execute([str(args.test_exe), "--timeline", str(source)]).stdout)
+            require(timeline["videoHasEdit"] == item["edited"], name + " reports its video edit-list presence")
+            require(timeline["videoFirst100ns"] == item["video_first"], name + " retains its independent video start")
+            require(timeline["videoEnd100ns"] == item["video_end"], name + " ends video at the independent stream boundary")
+            require(timeline["audioEnd100ns"] == item["audio_end"], name + " ends audio at the independent stream boundary")
+            info, output = export(source, source.stem)
+            channels, rate, bits, _, pcm = read_wave(output)
+            require((channels, rate, bits) == (item["audio_channels"], item["audio_rate"], 16), name + " keeps the AAC PCM format")
+            require(info["frameCount"] == item["audio_frames"] and len(pcm) == item["audio_frames"] * channels * 2,
+                    name + " preserves every decoded audio sample")
+            require(info["duration100ns"] == item["audio_duration"], name + " preserves its independent audio duration")
+            reference_pcm = (directory / item["audio_reference_file"]).read_bytes()
+            samples = array.array("h", pcm)
+            reference_samples = array.array("h", reference_pcm)
+            difference = sum(abs(a - b) for a, b in zip(samples, reference_samples)) / len(samples)
+            require(len(pcm) == len(reference_pcm) and difference <= 3,
+                    name + " matches timestamp-aware AAC samples within three levels on average")
+            gap_bytes = channels * 2
+            require(all(not any(pcm[gap["start_frame"] * gap_bytes:(gap["start_frame"] + gap["frames"]) * gap_bytes])
+                        and not any(reference_pcm[gap["start_frame"] * gap_bytes:(gap["start_frame"] + gap["frames"]) * gap_bytes])
+                        for gap in item["audio_gaps"]), name + " preserves silence at independently probed timestamp gaps")
+        signed_timeline = json.loads(execute([str(args.test_exe), "--timeline", str(signed_timing)]).stdout)
+        require(signed_timeline["videoEnd100ns"] == 6_000_000,
+                "signed nonmonotonic composition runs use the latest sample end")
+        large_timeline = json.loads(execute([str(args.test_exe), "--timeline", str(large_timing)]).stdout)
+        require(large_timeline["videoEnd100ns"] == 40_000_001_000_000,
+                "large sample runs preserve their end without expanding billions of samples")
+        variable_timing = directory / "variable-timing.mp4"
+        variable_timing.write_bytes(synthetic_timing([(1, 120), (1, 280), (1, 80), (1, 360)], []))
+        variable_timeline = json.loads(execute([str(args.test_exe), "--timeline", str(variable_timing)]).stdout)
+        require(variable_timeline["videoFirst100ns"] == 0 and variable_timeline["videoEnd100ns"] == 8_400_000,
+                "variable decode durations retain the independent final sample boundary")
+        zero_duration = directory / "zero-duration-timing.mp4"
+        zero_duration.write_bytes(synthetic_timing([(2, 0)], []))
+        require(execute([str(args.test_exe), "--timeline", str(zero_duration)], check=False).returncode != 0,
+                "zero-duration MP4 sample runs are rejected")
+        decode_overflow = directory / "decode-overflow-timing.mp4"
+        decode_overflow.write_bytes(synthetic_timing([(0xFFFFFFFF, 0xFFFFFFFF)], []))
+        require(execute([str(args.test_exe), "--timeline", str(decode_overflow)], check=False).returncode != 0,
+                "decode-end overflow is rejected without wrapping the track duration")
+        composition_overflow = directory / "composition-overflow-timing.mp4"
+        composition_overflow.write_bytes(synthetic_timing([(0xFFFFFFFF, 0x80000000)], [(0xFFFFFFFF, 0xFFFFFFFF)], signed=False))
+        require(execute([str(args.test_exe), "--timeline", str(composition_overflow)], check=False).returncode != 0,
+                "composition-end overflow is rejected even when decode duration fits")
         report = {"status": "passed", "checks": checks, "count": len(checks)}
         (directory / "integration-results.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
         print(f"PASS {len(checks)} audio integration checks")

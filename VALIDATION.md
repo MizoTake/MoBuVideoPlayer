@@ -181,3 +181,38 @@ C++ソースは変更していません。更新した配布ZIPには実ホス�
 MotionBuilderの追加起動や実ユーザー設定の変更は行っていません。別PCでの受入試験は今回の範囲に含みません。
 
 根拠：`build/path-fixes/japanese-configure-red.log`、`japanese-build-green.log`、`japanese-ninja-deps.log`、`japanese-header-incremental.log`、`japanese-no-work.log`、`japanese-core-all-green.log`、`relative-input-real-green.log`、`relative-package-real-green.log`、`relative-verify-real-green.log`、`build/relative-path-input-green.json`、`build/relative-path-package-green.json`、`build/relative-path-package-green-ps51.json`、`build/relative-path-ci-green.json`。
+
+## MP4の映像・音声の独立した終端（2026-10-17）
+
+edit listのないMP4で、映像2秒・12フレームに対して音声が約3.0293333秒ある場合、Story用の映像が19フレームまで延長される不具合を再現しました。
+MP4のsttsとcttsをrun単位で走査し、最小の表示時刻と各サンプルの表示終端の最大値を求めるよう修正しました。
+edit listの明示終端は維持し、edit listがない場合に映像・音声それぞれの終端を設定します。
+修正後の同じ入力は映像2秒・12フレーム、音声約3.0293333秒となりました。
+キャッシュ世代を5に更新し、旧世代の誤ったキャッシュを再利用しません。既存キャッシュは削除せず、既存Storyクリップへは元動画の再読込が必要です。
+直接動画再生でコンテナ終端まで最終フレームを保持する既存の仕様は変更していません。
+
+映像2秒／音声約3.03秒、映像3秒／音声約2.03秒、Bフレーム、VFRについて、edit listあり・なしの計8入力を追加しました。
+独立したFFprobeのトラック時刻とedit listの解析を終端の参照値にし、音声はFFmpegの時刻を考慮したPCM出力とサンプル数・平均差・無音位置を照合しました。
+Bフレームのno-edit入力に存在する16,000サンプルの時刻上の空白も保持しています。
+非単調なsigned CTTS、可変サンプル期間、40億サンプルのrun、ゼロ期間、不正・オーバーフローも検査しました。
+音声200項目とキャッシュ60項目が成功しています。
+
+Windows 11、既存MSVCとMotionBuilder 2026 SDKで `scripts/build.ps1 -BuildDirectory ./build/track-ends-sdk -RequireIntegrationTests` を実行し、Release DLLの再ビルドとCTest全13スイートが成功しました（63.44秒）。
+生成した動画fixtureは既存RTX 4070のh264_nvencを使用しています。
+公開ソースのみを日本語・空白を含む別フォルダへコピーし、SDKを使わず `scripts/ci-build.ps1 -Mode Core -BuildDirectory ./build/core` を実行した結果も13スイート成功しました（62.78秒）。
+この再検証は既存ホストが参照しているfixtureを上書きしないよう、新しいビルド先で実施しています。
+
+今回再生成したDLLのSHA256は `795bb13f23c731a25af261e3bc97402f323a4e97a3a7ba034afcbf1c9bbe94ae` です。
+READMEから製品の固定版数を除き、GitタグとReleaseで配布版を示す説明に変更しました。
+
+この新DLLだけを指定した専用のMotionBuilder 2026検証ウィンドウを1つ起動し、既存ウィンドウは変更していません。
+設定保存先も検証用フォルダへ分離し、マウス・キー入力なしでSDKから試験しました。
+まず `tests/mobu_story_smoke.py` の描画・実音声出力・標準Story操作・FBX再読込の58項目が成功しました。
+続けて同じプロセスで `tests/mobu_story_track_ends.py` を実行し、上記8入力の読込、映像と音声双方の移動・トリム・速度・Muteと復元、PNG枚数・WAVサンプル数とキャッシュハッシュ、FBX保存・新規シーン・再読込の596項目が成功しました。
+実際にロードされたDLLと選択したDLLのSHA256一致も検査しています。
+映像2秒／音声3.0293333秒はPNG12枚、映像3秒／音声2.0266667秒はPNG18枚となり、再読込後も各終端を保持しました。
+VFRは映像1.88秒／音声3.0293333秒、Bフレームno-edit入力は映像開始0.3333333秒・長さ2秒／音声3.3626667秒を保持しています。
+再読込後の試験FBXを別名保存し、追加した終端検証トラックをMuteにして同じウィンドウを残しています。
+検証スクリプトは専用ホストを示す環境変数と期待DLLハッシュを必須にしています。シーンを切り替えるため、共有作業中のホストでは実行しないでください。
+
+根拠：`build/remaining-review-noedit/raw-aac-comparison.json`、`fixed-raw-aac-comparison.json`、`build/track-ends-audio-red.log`、`track-ends-cache-red.log`、`track-ends-fresh-sdk.log`、`track-ends-sdk/audio-fixtures/track-ends-reference.json`、`track-ends-sdk/Testing/Temporary/LastTest.log`、`track-ends-japanese-core.log`、`artifacts/ends-host-001/story-results.json`、`ends/track-ends-results.json`、`ends/track-ends-reopened.fbx`。

@@ -577,6 +577,10 @@ private:
         PropVariantInit(&position);
         position.vt = VT_I8;
         position.hVal.QuadPart = AddTime(target, info_.presentationOrigin100ns);
+        if (info_.duration100ns > 0) {
+            // Offset presentation timestamps can exceed the source's valid seek interval.
+            position.hVal.QuadPart = (std::min)(position.hVal.QuadPart, info_.duration100ns - 1);
+        }
         Check(reader_->SetCurrentPosition(GUID_NULL, position), "Seek native video source");
         current_.reset();
         next_.reset();

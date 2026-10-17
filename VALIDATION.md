@@ -231,3 +231,16 @@ DLL更新時には登録設定のバイト一致を確認しました。通常�
 この導入確認ではソースとDLLを再生成していません。GitHub-hosted CIの実行結果は各ReleaseとActionsで確認してください。
 
 根拠：`artifacts/installed-update-001/scene-backup.json`、`installed-update.json`、`restart.json`、`host/installed-host-results.json`、`host/story-results.json`、`host/ends/track-ends-results.json`、`independent-audit.json`。
+
+## GitHub CIの初回実行で見つかった問題（2026-10-17）
+
+GitHubのWindows Server 2022ランナーで、Visual StudioのDevShell初期化時に、先に追加したFFmpegの検索パスが消える失敗を確認しました。
+実DevShellを使ってPowerShell 5.1と7で再現し、初期化前のPATHをVSのPATHへ追加して両方のツールを保持するよう修正しました。
+実build.ps1を呼ぶ回帰テストは修正前に失敗し、修正後はCI契約テスト30項目が成功しました。
+英語環境のPython標準出力で日本語の音声テスト名を表示できない問題も再現し、UTF-8を明示した後は同じcp1252環境指定で音声200項目が成功しました。
+
+開始時刻のずれを加えたシーク位置がコンテナ終端を超えると、OSのMedia Sourceが要求を拒否する問題をソフトウェアデコードでも再現しました。
+OSへ渡すシーク位置を有効な終端に収め、そこから目的の表示フレームまでデコードするよう修正しました。
+末尾表示後に末尾直前へ戻るケースを7入力へ追加し、同じソフトウェア検証は修正前の78成功・2失敗から80項目成功になりました。
+
+根拠：`build/github-ci-path-red.json`、`github-ci-path-green.json`、`ci-audio-encoding-red.log`、`ci-audio-encoding-green.log`、`server-seek-probe/regression-before.log`、`server-seek-probe/regression-after.log`。

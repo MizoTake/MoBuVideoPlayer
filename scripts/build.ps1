@@ -46,7 +46,10 @@ if (-not (Test-Path -LiteralPath $vswhere)) { throw 'Visual Studio 2022 C++ buil
 $vsRoot = & $vswhere -latest -version '[17.0,18.0)' -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
 if (-not $vsRoot) { throw 'Install the Visual Studio 2022 Desktop development with C++ component.' }
 Import-Module (Join-Path $vsRoot 'Common7/Tools/Microsoft.VisualStudio.DevShell.dll')
+$buildToolPathBeforeDevShell = $env:PATH
 Enter-VsDevShell -VsInstallPath $vsRoot -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64' | Out-Null
+# DevShell can discard tools added earlier in this process, including CI-only FFmpeg downloads.
+$env:PATH = $env:PATH + [IO.Path]::PathSeparator + $buildToolPathBeforeDevShell
 $env:VSLANG = '1033'
 $ninjaCommand = Get-Command ninja -ErrorAction SilentlyContinue
 $ninjaPath = if ($ninjaCommand) { $ninjaCommand.Source } else {

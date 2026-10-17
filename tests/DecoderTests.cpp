@@ -286,6 +286,13 @@ int wmain(int argc, wchar_t* argv[])
                     DecodeAndVerify(*decoder, fixture, time);
                 }
             });
+            runner.Run(fixture.name + ": seeking backward after the final frame preserves frame identity", [&] {
+                decoder->Open(fixture.file);
+                DecodeAndVerify(*decoder, fixture, fixture.duration100ns - 1);
+                const auto penultimate = fixture.frames.size() - 2;
+                DecodeAndVerify(*decoder, fixture, fixture.frames[penultimate].presentation100ns + 100);
+                DecodeAndVerify(*decoder, fixture, fixture.duration100ns - 1);
+            });
             runner.Run(fixture.name + ": trim indices select the exact source frames", [&] {
                 decoder->Open(fixture.file);
                 const auto probeTime = fixture.frames[fixture.frames.size() / 2].presentation100ns + 100;

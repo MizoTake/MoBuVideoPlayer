@@ -361,6 +361,66 @@ param($ArchivePath, $ExpectedVersion, $CompareSourceRoot, $ReportPath, [switch]$
         Require ($calls[1].plugin -ceq $inputPlugin -and $calls[1].metadata -ceq $inputMetadata) 'The provider-qualified relative inputs were not resolved.'
         Require ($calls[2].output -ceq (Join-Path $fixtureRoot 'qualified output')) 'The provider-qualified relative output was not resolved.'
     }
+    Check 'Native build retains hosted test tools when Visual Studio resets PATH' {
+        $buildEnvironmentBefore = @{}
+        foreach ($name in @('PATH', 'ProgramFiles(x86)', 'VSLANG')) {
+            $buildEnvironmentBefore[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+        }
+        try {
+            & {
+                $toolDirectory = Join-Path $fixtureRoot ($unicodeName + ' hosted tools')
+                $vsRoot = Join-Path $fixtureRoot 'Visual Studio'
+                $vsBin = Join-Path $vsRoot 'bin'
+                $vswhere = Join-Path $fixtureRoot 'Microsoft Visual Studio/Installer/vswhere.exe'
+                $ninja = Join-Path $vsRoot 'Common7/IDE/CommonExtensions/Microsoft/CMake/Ninja/ninja.exe'
+                foreach ($path in @($toolDirectory, $vsBin, (Split-Path $vswhere), (Split-Path $ninja))) {
+                    [void][IO.Directory]::CreateDirectory($path)
+                }
+                foreach ($path in @($vswhere, $ninja, (Join-Path $toolDirectory 'ffmpeg.exe'),
+                    (Join-Path $toolDirectory 'ffprobe.exe'))) {
+                    [IO.File]::WriteAllBytes($path, [byte[]]::new(0))
+                }
+                $nativeBuild = Join-Path $fixtureRoot 'scripts/native-build.ps1'
+                Copy-Item -LiteralPath (Join-Path $repoRoot 'scripts/build.ps1') -Destination $nativeBuild
+                [Environment]::SetEnvironmentVariable('ProgramFiles(x86)', $fixtureRoot, 'Process')
+                $env:PATH = $toolDirectory + [IO.Path]::PathSeparator + $env:PATH
+                $nativeCalls = [Collections.Generic.List[string]]::new()
+                Set-Item -Path ('Function:' + $vswhere) -Value { $vsRoot }
+                function Import-Module {
+                    param($Name)
+                    Require ($Name -ceq (Join-Path $vsRoot 'Common7/Tools/Microsoft.VisualStudio.DevShell.dll')) 'The native build imported an unexpected module.'
+                }
+                function Enter-VsDevShell {
+                    param($VsInstallPath, [switch]$SkipAutomaticLocation, $DevCmdArguments)
+                    Require ($VsInstallPath -ceq $vsRoot) 'The native build selected an unexpected Visual Studio installation.'
+                    $env:PATH = $vsBin
+                }
+                function cmake {
+                    if ($args[0] -ceq '-S') {
+                        foreach ($toolName in @('ffmpeg', 'ffprobe')) {
+                            $found = Get-Command $toolName -CommandType Application -ErrorAction SilentlyContinue
+                            Require ($null -ne $found -and $found.Source -ceq (Join-Path $toolDirectory ($toolName + '.exe'))) 'Hosted test tools disappeared after Visual Studio initialized PATH.'
+                        }
+                        Require ($env:PATH.Split([IO.Path]::PathSeparator) -ccontains $vsBin) 'The Visual Studio tool directory disappeared from PATH.'
+                        $nativeCalls.Add('configure')
+                    } elseif ($args[0] -ceq '--build') {
+                        $nativeCalls.Add('build')
+                    } else { throw 'The native build invoked an unexpected CMake operation.' }
+                    $global:LASTEXITCODE = 0
+                }
+                function ctest {
+                    $nativeCalls.Add('test')
+                    $global:LASTEXITCODE = 0
+                }
+                & $nativeBuild -CoreOnly -RequireIntegrationTests
+                Require (($nativeCalls -join ',') -ceq 'configure,build,test') 'The native build did not finish configuration, build and test in order.'
+            }
+        } finally {
+            foreach ($name in $buildEnvironmentBefore.Keys) {
+                [Environment]::SetEnvironmentVariable($name, $buildEnvironmentBefore[$name], 'Process')
+            }
+        }
+    }
 } finally {
     foreach ($name in $environmentBefore.Keys) {
         [Environment]::SetEnvironmentVariable($name, $environmentBefore[$name], 'Process')

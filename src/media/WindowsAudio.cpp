@@ -583,6 +583,39 @@ void VerifyType(IMFMediaType* type, const AudioExportResult& info)
     }
 }
 
+std::int64_t AudioSourceClockOffset(const std::filesystem::path& source,
+    const TrackPresentationTimeline& timeline, const GUID& subtype)
+{
+    if (subtype != MFAudioFormat_AAC || !timeline.firstPresentation100ns) {
+        return 0;
+    }
+    ComPtr<IMFSourceReader> packets;
+    Check(MFCreateSourceReaderFromURL(source.c_str(), nullptr, &packets), "Open AAC source clock");
+    Check(packets->SetStreamSelection(AllStreams, FALSE), "Disable unused AAC source-clock streams");
+    Check(packets->SetStreamSelection(AudioStream, TRUE), "Select AAC source-clock stream");
+    ComPtr<IMFMediaType> encoded;
+    Check(packets->GetNativeMediaType(AudioStream, 0, &encoded), "Read AAC source-clock format");
+    Check(packets->SetCurrentMediaType(AudioStream, nullptr, encoded.Get()), "Preserve AAC source-clock packets");
+    for (unsigned empty = 0; empty < 4096; ++empty) {
+        DWORD flags = 0;
+        LONGLONG timestamp = 0;
+        ComPtr<IMFSample> sample;
+        Check(packets->ReadSample(AudioStream, 0, nullptr, &flags, &timestamp, &sample), "Read AAC source clock");
+        if ((flags & MF_SOURCE_READERF_ERROR) != 0) {
+            throw std::runtime_error("The AAC source reported a source-clock error.");
+        }
+        if (sample) {
+            // Relocated packet timestamps would otherwise apply the edit offset to the wrong AAC priming interval.
+            return TimelineTicks(static_cast<long double>(*timeline.firstPresentation100ns)
+                - timeline.offset100ns - timestamp);
+        }
+        if ((flags & MF_SOURCE_READERF_ENDOFSTREAM) != 0) {
+            break;
+        }
+    }
+    throw std::runtime_error("The AAC source contains no timestamped packets.");
+}
+
 }
 
 PresentationTimeline ReadPresentationTimeline(const std::filesystem::path& source)
@@ -669,6 +702,7 @@ AudioExportResult ExportAudioWave(const std::filesystem::path& source,
     Check(nativeType->GetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, &result.sampleRate), "GetUINT32 (native audio sample rate)");
     GUID nativeSubtype{};
     Check(nativeType->GetGUID(MF_MT_SUBTYPE, &nativeSubtype), "GetGUID (native audio subtype)");
+    const auto sourceClockOffset = AudioSourceClockOffset(source, timeline, nativeSubtype);
     UINT32 nativeBits = 16;
     nativeType->GetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, &nativeBits);
     if (!nativeBits && nativeSubtype != MFAudioFormat_PCM && nativeSubtype != MFAudioFormat_Float) {
@@ -744,7 +778,8 @@ AudioExportResult ExportAudioWave(const std::filesystem::path& source,
             emptyReads = 0;
             if (!foundSample) {
                 foundSample = true;
-                result.firstPresentation100ns = TimelineTicks(static_cast<long double>(timestamp) + timeline.offset100ns);
+                result.firstPresentation100ns = TimelineTicks(static_cast<long double>(timestamp)
+                    + sourceClockOffset + timeline.offset100ns);
             }
             ComPtr<IMFMediaBuffer> buffer;
             Check(sample->ConvertToContiguousBuffer(&buffer), "ConvertToContiguousBuffer (audio)");
@@ -752,7 +787,8 @@ AudioExportResult ExportAudioWave(const std::filesystem::path& source,
             if (data.Size() % block) {
                 throw std::runtime_error("The audio decoder returned an incomplete PCM frame.");
             }
-            const auto movieTimestamp = TimelineTicks(static_cast<long double>(timestamp) + timeline.offset100ns);
+            const auto movieTimestamp = TimelineTicks(static_cast<long double>(timestamp)
+                + sourceClockOffset + timeline.offset100ns);
             const auto position = SamplePosition(movieTimestamp, options.timelineOrigin100ns, result.sampleRate);
             std::uint64_t sampleFrames = data.Size() / block;
             if (timeline.end100ns) {

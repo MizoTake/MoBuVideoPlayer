@@ -14,7 +14,7 @@
 namespace mobu::media {
 namespace {
 
-constexpr unsigned CacheRevision = 5;
+constexpr unsigned CacheRevision = 6;
 
 std::filesystem::path AudioFilename(const std::string& digest, const MediaCacheOptions& options) {
     return "a" + std::to_string(CacheRevision) + "-" + digest +

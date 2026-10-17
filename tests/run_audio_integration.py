@@ -410,6 +410,8 @@ def main() -> int:
         timeline = json.loads(execute([str(args.test_exe), "--timeline", str(aac)]).stdout)
         print("INFO AAC timeline " + json.dumps(timeline, sort_keys=True), flush=True)
         info, aac_output = export(aac, "aac")
+        require(info["firstPresentation100ns"] == timeline["audioFirst100ns"],
+                "AAC source clock retains the canonical MP4 priming presentation time")
         _, aac_rate, _, _, pcm = read_wave(aac_output)
         require(info["hasAudio"] and info["channels"] == 2 and aac_rate == 48000,
                 "AAC decodes through Windows PCM output")
@@ -448,6 +450,9 @@ def main() -> int:
                "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac",
                "-b:a", "192k", str(offset_mp4))
         info, offset_output = export(offset_mp4, "offset")
+        timeline = json.loads(execute([str(args.test_exe), "--timeline", str(offset_mp4)]).stdout)
+        require(info["firstPresentation100ns"] == timeline["audioFirst100ns"],
+                "delayed AAC source clock retains its canonical MP4 presentation time")
         offset_pcm = read_wave(offset_output)[4]
         require(info["firstPresentation100ns"] >= 4_000_000,
                 "delayed source reports movie audio presentation origin")
@@ -466,6 +471,9 @@ def main() -> int:
                "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", str(combined))
         origin = json.loads(execute([str(args.test_exe), "--video-origin", str(combined)]).stdout)
         combined_info, combined_output = export(combined, "combined", origin["movieVideoOrigin100ns"])
+        timeline = json.loads(execute([str(args.test_exe), "--timeline", str(combined)]).stdout)
+        require(combined_info["firstPresentation100ns"] == timeline["audioFirst100ns"],
+                "B-frame AAC source clock retains its canonical MP4 presentation time")
         require(origin["movieVideoOrigin100ns"] == 0 and combined_info["frameCount"] == 48000,
                 "B-frame video with AAC retains the complete aligned second")
         combined_samples = array.array("h", read_wave(combined_output)[4])
@@ -480,6 +488,9 @@ def main() -> int:
         require(origin["movieVideoOrigin100ns"] == 5_000_000,
                 "leading empty video edit has canonical half-second presentation origin")
         delayed_info, delayed_output = export(delayed_video, "video-delayed", origin["movieVideoOrigin100ns"])
+        timeline = json.loads(execute([str(args.test_exe), "--timeline", str(delayed_video)]).stdout)
+        require(delayed_info["firstPresentation100ns"] == timeline["audioFirst100ns"],
+                "video-delayed AAC source clock retains its canonical MP4 presentation time")
         require(delayed_info["frameCount"] == 24000,
                 "video-normalized audio trims exactly the half-second before first video")
         delayed_samples = array.array("h", read_wave(delayed_output)[4])
@@ -552,6 +563,8 @@ def main() -> int:
             require(timeline["videoEnd100ns"] == item["video_end"], name + " ends video at the independent stream boundary")
             require(timeline["audioEnd100ns"] == item["audio_end"], name + " ends audio at the independent stream boundary")
             info, output = export(source, source.stem)
+            require(info["firstPresentation100ns"] == timeline["audioFirst100ns"],
+                    name + " source clock retains its canonical MP4 presentation time")
             channels, rate, bits, _, pcm = read_wave(output)
             require((channels, rate, bits) == (item["audio_channels"], item["audio_rate"], 16), name + " keeps the AAC PCM format")
             require(info["frameCount"] == item["audio_frames"] and len(pcm) == item["audio_frames"] * channels * 2,

@@ -9,6 +9,24 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+foreach ($pathParameter in @('ArchivePath', 'CompareSourceRoot', 'ReportPath')) {
+    $pathValue = Get-Variable -Name $pathParameter -ValueOnly
+    if ([string]::IsNullOrEmpty($pathValue)) { continue }
+    $pathProvider = $null
+    $pathDrive = $null
+    $resolvedPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath(
+        $pathValue, [ref]$pathProvider, [ref]$pathDrive)
+    if ($pathProvider.Name -ne 'FileSystem') { throw "$pathParameter must use the FileSystem provider." }
+    if (-not [IO.Path]::IsPathRooted($resolvedPath)) {
+        $resolvedPath = Join-Path $ExecutionContext.SessionState.Path.CurrentFileSystemLocation.Path $resolvedPath
+    } elseif ($resolvedPath -match '^[\\/](?![\\/])') {
+        $resolvedPath = Join-Path $ExecutionContext.SessionState.Path.CurrentFileSystemLocation.Drive.Root $resolvedPath.TrimStart('\', '/')
+    }
+    $resolvedPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath(
+        $resolvedPath, [ref]$pathProvider, [ref]$pathDrive)
+    if ($pathProvider.Name -ne 'FileSystem') { throw "$pathParameter must use the FileSystem provider." }
+    Set-Variable -Name $pathParameter -Value ([IO.Path]::GetFullPath($resolvedPath))
+}
 $expectedFiles = @('Install.ps1', 'README.md', 'Uninstall.ps1', 'VALIDATION.md',
     'docs/DEPENDENCIES.md', 'plugins/MoBuVideoPlayer.dll', 'scripts/PluginPath.ps1', 'scripts/launch.ps1')
 $utf8 = New-Object Text.UTF8Encoding($false, $true)

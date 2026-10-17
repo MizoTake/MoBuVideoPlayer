@@ -21,6 +21,24 @@ if ($existingHosts.Count -and -not $NewWindow) {
     Write-Output "Using existing MotionBuilder window (PID: $hostIds). No process was started."
     return
 }
+foreach ($pathParameter in @('MotionBuilderRoot', 'PluginDirectory', 'StartupScript')) {
+    $pathValue = Get-Variable -Name $pathParameter -ValueOnly
+    if ([string]::IsNullOrEmpty($pathValue)) { continue }
+    $pathProvider = $null
+    $pathDrive = $null
+    $resolvedPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath(
+        $pathValue, [ref]$pathProvider, [ref]$pathDrive)
+    if ($pathProvider.Name -ne 'FileSystem') { throw "$pathParameter must use the FileSystem provider." }
+    if (-not [IO.Path]::IsPathRooted($resolvedPath)) {
+        $resolvedPath = Join-Path $ExecutionContext.SessionState.Path.CurrentFileSystemLocation.Path $resolvedPath
+    } elseif ($resolvedPath -match '^[\\/](?![\\/])') {
+        $resolvedPath = Join-Path $ExecutionContext.SessionState.Path.CurrentFileSystemLocation.Drive.Root $resolvedPath.TrimStart('\', '/')
+    }
+    $resolvedPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath(
+        $resolvedPath, [ref]$pathProvider, [ref]$pathDrive)
+    if ($pathProvider.Name -ne 'FileSystem') { throw "$pathParameter must use the FileSystem provider." }
+    Set-Variable -Name $pathParameter -Value ([IO.Path]::GetFullPath($resolvedPath))
+}
 if (-not $MotionBuilderRoot) {
     $MotionBuilderRoot = Join-Path $env:ProgramFiles 'Autodesk/MotionBuilder 2026'
 }

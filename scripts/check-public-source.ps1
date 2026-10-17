@@ -6,6 +6,24 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+foreach ($pathParameter in @('Root', 'ReportPath')) {
+    $pathValue = Get-Variable -Name $pathParameter -ValueOnly
+    if ([string]::IsNullOrEmpty($pathValue)) { continue }
+    $pathProvider = $null
+    $pathDrive = $null
+    $resolvedPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath(
+        $pathValue, [ref]$pathProvider, [ref]$pathDrive)
+    if ($pathProvider.Name -ne 'FileSystem') { throw "$pathParameter must use the FileSystem provider." }
+    if (-not [IO.Path]::IsPathRooted($resolvedPath)) {
+        $resolvedPath = Join-Path $ExecutionContext.SessionState.Path.CurrentFileSystemLocation.Path $resolvedPath
+    } elseif ($resolvedPath -match '^[\\/](?![\\/])') {
+        $resolvedPath = Join-Path $ExecutionContext.SessionState.Path.CurrentFileSystemLocation.Drive.Root $resolvedPath.TrimStart('\', '/')
+    }
+    $resolvedPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath(
+        $resolvedPath, [ref]$pathProvider, [ref]$pathDrive)
+    if ($pathProvider.Name -ne 'FileSystem') { throw "$pathParameter must use the FileSystem provider." }
+    Set-Variable -Name $pathParameter -Value ([IO.Path]::GetFullPath($resolvedPath))
+}
 $rootPath = [IO.Path]::GetFullPath($Root)
 $tracked = @(& git -C $rootPath -c core.quotepath=false ls-files --cached --others --exclude-standard)
 if ($LASTEXITCODE) { throw 'Run this check inside a Git repository.' }

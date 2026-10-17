@@ -12,6 +12,24 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+foreach ($pathParameter in @('PluginPath', 'MetadataPath', 'BuildDirectory', 'OutputDirectory')) {
+    $pathValue = Get-Variable -Name $pathParameter -ValueOnly
+    if ([string]::IsNullOrEmpty($pathValue)) { continue }
+    $pathProvider = $null
+    $pathDrive = $null
+    $resolvedPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath(
+        $pathValue, [ref]$pathProvider, [ref]$pathDrive)
+    if ($pathProvider.Name -ne 'FileSystem') { throw "$pathParameter must use the FileSystem provider." }
+    if (-not [IO.Path]::IsPathRooted($resolvedPath)) {
+        $resolvedPath = Join-Path $ExecutionContext.SessionState.Path.CurrentFileSystemLocation.Path $resolvedPath
+    } elseif ($resolvedPath -match '^[\\/](?![\\/])') {
+        $resolvedPath = Join-Path $ExecutionContext.SessionState.Path.CurrentFileSystemLocation.Drive.Root $resolvedPath.TrimStart('\', '/')
+    }
+    $resolvedPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath(
+        $resolvedPath, [ref]$pathProvider, [ref]$pathDrive)
+    if ($pathProvider.Name -ne 'FileSystem') { throw "$pathParameter must use the FileSystem provider." }
+    Set-Variable -Name $pathParameter -Value ([IO.Path]::GetFullPath($resolvedPath))
+}
 $projectRoot = Split-Path -Parent $PSScriptRoot
 if (-not $BuildDirectory) { $BuildDirectory = Join-Path $projectRoot ('build/ci-' + $Mode.ToLowerInvariant()) }
 if (-not $OutputDirectory) { $OutputDirectory = Join-Path $projectRoot 'dist' }

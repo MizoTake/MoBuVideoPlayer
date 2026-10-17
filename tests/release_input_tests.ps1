@@ -98,6 +98,23 @@ function Invoke-InputTestCase {
     }
 }
 
+function Invoke-InputTestLocation {
+    param([string]$WorkingDirectory, [string]$ProcessDirectory, [scriptblock]$Body)
+    $locationBefore = Get-Location
+    $processBefore = [IO.Directory]::GetCurrentDirectory()
+    try {
+        Set-Location -LiteralPath $WorkingDirectory
+        [IO.Directory]::SetCurrentDirectory($ProcessDirectory)
+        Assert-InputTest ([IO.Path]::GetFullPath('relative-location-probe') -cne (Join-Path $WorkingDirectory 'relative-location-probe')) 'The regression setup did not separate PowerShell and process locations.'
+        & $Body
+        Assert-InputTest ([IO.Directory]::GetCurrentDirectory() -ceq $ProcessDirectory) 'A release entry changed the process working directory.'
+    }
+    finally {
+        Set-Location -LiteralPath $locationBefore.Path
+        [IO.Directory]::SetCurrentDirectory($processBefore)
+    }
+}
+
 try {
     [void][IO.Directory]::CreateDirectory($fixtureRoot)
 
@@ -234,6 +251,94 @@ try {
         Assert-InputTestRejected {
             & $prepareScript -PluginPath $fixture.SourcePlugin -OutputDirectory $fixture.OutputDirectory -SourceRoot $fixture.SourceRoot
         }
+    }
+    $unicodeName = (-join [char[]]@(0x65e5, 0x672c, 0x8a9e)) + ' path'
+    $processDirectory = Join-Path $fixtureRoot 'process-directory'
+    [void][IO.Directory]::CreateDirectory($processDirectory)
+    Invoke-InputTestCase 'Preparation resolves relative source, DLL and output from PowerShell location in a Unicode path' {
+        $fixture = New-InputTestFixture -SkipPrepare
+        $unicodeCase = Join-Path $fixtureRoot ($unicodeName + ' ' + [guid]::NewGuid().ToString('N'))
+        Move-Item -LiteralPath $fixture.Root -Destination $unicodeCase
+        $relativeRoot = [IO.Path]::GetFileName($unicodeCase)
+        $preparedDirectory = Join-Path $unicodeCase 'prepared input'
+        Invoke-InputTestLocation $fixtureRoot $processDirectory {
+            & $prepareScript -SourceRoot (Join-Path $relativeRoot 'source') `
+                -PluginPath (Join-Path $relativeRoot 'tested-plugin.dll') `
+                -OutputDirectory (Join-Path $relativeRoot 'prepared input') | Out-Null
+        }
+        Assert-InputTest (@(Get-ChildItem -LiteralPath $preparedDirectory -Filter '*.dll').Count -eq 1) 'The relative DLL output was not written under PowerShell location.'
+        Assert-InputTest (@(Get-ChildItem -LiteralPath $preparedDirectory -Filter '*.json').Count -eq 1) 'The relative metadata output was not written under PowerShell location.'
+    }
+    Invoke-InputTestCase 'Verification resolves relative DLL, metadata, source and report from PowerShell location' {
+        $fixture = New-InputTestFixture
+        $relativeRoot = [IO.Path]::GetFileName($fixture.Root)
+        $reportName = $unicodeName + ' report.json'
+        Invoke-InputTestLocation $fixtureRoot $processDirectory {
+            & $verifyScript -PluginPath (Join-Path $relativeRoot ('input/' + [IO.Path]::GetFileName($fixture.PluginPath))) `
+                -MetadataPath (Join-Path $relativeRoot ('input/' + [IO.Path]::GetFileName($fixture.MetadataPath))) `
+                -SourceRoot (Join-Path $relativeRoot 'source') -ExpectedVersion $fixtureVersion `
+                -ReportPath (Join-Path $relativeRoot $reportName) | Out-Null
+        }
+        Assert-InputTest ([IO.File]::Exists((Join-Path $fixture.Root $reportName))) 'The verification report was written relative to the process directory.'
+    }
+    Invoke-InputTestCase 'A relative verification report is written under PowerShell location when all inputs are absolute' {
+        $fixture = New-InputTestFixture
+        $relativeReport = Join-Path ([IO.Path]::GetFileName($fixture.Root)) ($unicodeName + ' report.json')
+        Invoke-InputTestLocation $fixtureRoot $processDirectory { Invoke-InputTestVerify $fixture -VerificationReport $relativeReport }
+        Assert-InputTest ([IO.File]::Exists((Join-Path $fixtureRoot $relativeReport))) 'The absolute-input report used the process directory.'
+    }
+    Invoke-InputTestCase 'Release input paths support a FileSystem PowerShell drive' {
+        $fixture = New-InputTestFixture -SkipPrepare
+        $driveName = 'MoBuInput' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+        $null = New-PSDrive -Name $driveName -PSProvider FileSystem -Root $fixture.Root
+        try {
+            Invoke-InputTestLocation $fixtureRoot $processDirectory {
+                & $prepareScript -SourceRoot ($driveName + ':\source') -PluginPath ($driveName + ':\tested-plugin.dll') `
+                    -OutputDirectory ($driveName + ':\' + $unicodeName) | Out-Null
+            }
+            Assert-InputTest (@(Get-ChildItem -LiteralPath (Join-Path $fixture.Root $unicodeName) -Filter '*.json').Count -eq 1) 'The FileSystem drive output was not created in its target.'
+        }
+        finally { Remove-PSDrive -Name $driveName }
+    }
+    Invoke-InputTestCase 'Preparation accepts FileSystem-qualified paths with Unicode, brackets, spaces and a tilde' {
+        $fixture = New-InputTestFixture -SkipPrepare
+        $output = Join-Path $fixture.Root ($unicodeName + ' [media] ~ output')
+        Invoke-InputTestLocation $fixtureRoot $processDirectory {
+            & $prepareScript -SourceRoot ('FileSystem::' + $fixture.SourceRoot) -PluginPath ('FileSystem::' + $fixture.SourcePlugin) `
+                -OutputDirectory ('FileSystem::' + $output) | Out-Null
+        }
+        Assert-InputTest (@(Get-ChildItem -LiteralPath $output -Filter '*.json').Count -eq 1) 'The qualified output path was treated as wildcard syntax.'
+    }
+    Invoke-InputTestCase 'Non-FileSystem source paths are explicitly rejected' {
+        $fixture = New-InputTestFixture -SkipPrepare
+        $rejected = $false
+        try { & $prepareScript -SourceRoot 'Env:PATH' -PluginPath $fixture.SourcePlugin -OutputDirectory $fixture.OutputDirectory | Out-Null }
+        catch {
+            $rejected = $_.Exception.Message -match 'FileSystem'
+        }
+        Assert-InputTest $rejected 'The non-FileSystem provider was not explicitly rejected.'
+    }
+    Invoke-InputTestCase 'FileSystem-qualified relative source and parent paths resolve from PowerShell location' {
+        $fixture = New-InputTestFixture -SkipPrepare
+        $outputName = $unicodeName + ' qualified relative'
+        Invoke-InputTestLocation $fixture.SourceRoot $processDirectory {
+            & $prepareScript -SourceRoot 'FileSystem::.' -PluginPath 'FileSystem::..\tested-plugin.dll' `
+                -OutputDirectory ('FileSystem::..\' + $outputName) | Out-Null
+        }
+        Assert-InputTest (@(Get-ChildItem -LiteralPath (Join-Path $fixture.Root $outputName) -Filter '*.json').Count -eq 1) 'A provider-qualified relative path used the process directory.'
+    }
+    Invoke-InputTestCase 'FileSystem-qualified root-relative paths use the current PowerShell drive root' {
+        $fixture = New-InputTestFixture -SkipPrepare
+        $driveName = 'MoBuRoot' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+        $null = New-PSDrive -Name $driveName -PSProvider FileSystem -Root $fixture.Root
+        try {
+            Invoke-InputTestLocation ($driveName + ':\source') $processDirectory {
+                & $prepareScript -SourceRoot 'FileSystem::\source' -PluginPath 'FileSystem::\tested-plugin.dll' `
+                    -OutputDirectory 'FileSystem::\root relative output' | Out-Null
+            }
+            Assert-InputTest (@(Get-ChildItem -LiteralPath (Join-Path $fixture.Root 'root relative output') -Filter '*.json').Count -eq 1) 'A root-relative provider path ignored the PowerShell drive root.'
+        }
+        finally { Remove-PSDrive -Name $driveName }
     }
 }
 finally {

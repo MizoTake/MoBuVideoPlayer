@@ -50,6 +50,22 @@ function Check([string]$Name, [scriptblock]$Test) {
     }
 }
 
+function Invoke-CiTestLocation([string]$WorkingDirectory, [string]$ProcessDirectory, [scriptblock]$Body) {
+    $locationBefore = Get-Location
+    $processBefore = [IO.Directory]::GetCurrentDirectory()
+    try {
+        Set-Location -LiteralPath $WorkingDirectory
+        [IO.Directory]::SetCurrentDirectory($ProcessDirectory)
+        Require ([IO.Path]::GetFullPath('relative-location-probe') -cne (Join-Path $WorkingDirectory 'relative-location-probe')) 'The regression setup did not separate PowerShell and process locations.'
+        & $Body
+        Require ([IO.Directory]::GetCurrentDirectory() -ceq $ProcessDirectory) 'The CI entry changed the process working directory.'
+    }
+    finally {
+        Set-Location -LiteralPath $locationBefore.Path
+        [IO.Directory]::SetCurrentDirectory($processBefore)
+    }
+}
+
 function Invoke-WebRequest {
     throw 'Network requests are forbidden in the CI orchestration fixtures.'
 }
@@ -106,16 +122,16 @@ $null = New-Item -ItemType Directory -Path (Join-Path $BuildDirectory 'Testing/T
 @('1/2 Test: playback', '2/2 Test: native_decoder_integration', 'Directory: private-path-must-not-escape') | Set-Content -LiteralPath (Join-Path $BuildDirectory 'Testing/Temporary/LastTest.log')
 @{ source = 'private-source-must-not-escape'; test = @{ exit_code = 0; stdout = "private-command-must-not-escape`nRESULT passed=73 failed=0`n" } } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $BuildDirectory 'fixtures/integration-results.json')
 @{ status = 'passed'; checks = @(@{ name = 'first'; passed = $true }, @{ name = 'second'; passed = $true }); private = 'private-audio-must-not-escape' } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $BuildDirectory 'audio-fixtures/integration-results.json')
-@{ kind = 'Build'; core = [bool]$CoreOnly; integration = [bool]$RequireIntegrationTests; configuration = $Configuration } | ConvertTo-Json -Compress | Add-Content -LiteralPath $env:MOBU_CI_FIXTURE_LOG
+@{ kind = 'Build'; core = [bool]$CoreOnly; integration = [bool]$RequireIntegrationTests; configuration = $Configuration; buildDirectory = $BuildDirectory } | ConvertTo-Json -Compress | Add-Content -LiteralPath $env:MOBU_CI_FIXTURE_LOG
 '@
     Write-Fixture 'scripts/check-public-source.ps1' @'
 param($Root, $ReportPath)
-@{ kind = 'SourceCheck' } | ConvertTo-Json -Compress | Add-Content -LiteralPath $env:MOBU_CI_FIXTURE_LOG
+@{ kind = 'SourceCheck'; root = $Root; report = $ReportPath } | ConvertTo-Json -Compress | Add-Content -LiteralPath $env:MOBU_CI_FIXTURE_LOG
 '@
     Write-Fixture 'scripts/verify-release-input.ps1' @'
 param($PluginPath, $MetadataPath, $ExpectedVersion, $SourceRoot, $ReportPath)
 if ((Get-Content -LiteralPath $MetadataPath -Raw) -cne 'fixture provenance') { throw 'Fixture provenance was rejected.' }
-@{ kind = 'InputVerify'; plugin = $PluginPath; metadata = $MetadataPath; version = $ExpectedVersion; sourceRoot = $SourceRoot } | ConvertTo-Json -Compress | Add-Content -LiteralPath $env:MOBU_CI_FIXTURE_LOG
+@{ kind = 'InputVerify'; plugin = $PluginPath; metadata = $MetadataPath; version = $ExpectedVersion; sourceRoot = $SourceRoot; report = $ReportPath } | ConvertTo-Json -Compress | Add-Content -LiteralPath $env:MOBU_CI_FIXTURE_LOG
 '@
     Write-Fixture 'scripts/package.ps1' @'
 param($PluginPath, $OutputDirectory, $ExpectedVersion)
@@ -125,11 +141,11 @@ $path = Join-Path $OutputDirectory $name
 [IO.File]::WriteAllBytes($path, [byte[]](1, 2, 3, 4))
 $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([IO.File]::ReadAllBytes($path))).ToLowerInvariant()
 ($hash + '  ' + $name) | Set-Content -LiteralPath ($path + '.sha256') -Encoding utf8NoBOM
-@{ kind = 'Package'; plugin = $PluginPath; version = $ExpectedVersion } | ConvertTo-Json -Compress | Add-Content -LiteralPath $env:MOBU_CI_FIXTURE_LOG
+@{ kind = 'Package'; plugin = $PluginPath; version = $ExpectedVersion; output = $OutputDirectory } | ConvertTo-Json -Compress | Add-Content -LiteralPath $env:MOBU_CI_FIXTURE_LOG
 '@
     Write-Fixture 'scripts/verify-package.ps1' @'
 param($ArchivePath, $ExpectedVersion, $CompareSourceRoot, $ReportPath, [switch]$RequireChecksum)
-@{ kind = 'Verify'; version = $ExpectedVersion; requireChecksum = [bool]$RequireChecksum } | ConvertTo-Json -Compress | Add-Content -LiteralPath $env:MOBU_CI_FIXTURE_LOG
+@{ kind = 'Verify'; version = $ExpectedVersion; requireChecksum = [bool]$RequireChecksum; archive = $ArchivePath; sourceRoot = $CompareSourceRoot; report = $ReportPath } | ConvertTo-Json -Compress | Add-Content -LiteralPath $env:MOBU_CI_FIXTURE_LOG
 '@
     $ciScript = Join-Path $fixtureRoot 'scripts/ci-build.ps1'
     $ciOutput = Join-Path $fixtureRoot 'output'
@@ -281,6 +297,69 @@ param($ArchivePath, $ExpectedVersion, $CompareSourceRoot, $ReportPath, [switch]$
         Set-GhFixture @((New-GhReleaseFixture), (New-GhReleaseFixture -Id 43))
         Reject { & $uploadStep } 'matching unpublished draft'
         Require (@($script:GhCalls | Where-Object command -eq 'release upload').Count -eq 0) 'The workflow uploaded to a replacement release.'
+    }
+    $unicodeName = (-join [char[]]@(0x65e5, 0x672c, 0x8a9e)) + ' path'
+    $processDirectory = Join-Path $fixtureRoot 'process-directory'
+    $null = New-Item -ItemType Directory -Path $processDirectory
+    Check 'CI resolves relative Unicode DLL, metadata, build and output paths before delegating' {
+        $inputName = $unicodeName + ' input'
+        $null = New-Item -ItemType Directory -Path (Join-Path $fixtureRoot $inputName)
+        Copy-Item -LiteralPath $inputPlugin -Destination (Join-Path (Join-Path $fixtureRoot $inputName) 'plugin.dll')
+        Copy-Item -LiteralPath $inputMetadata -Destination (Join-Path (Join-Path $fixtureRoot $inputName) 'plugin.json')
+        $buildName = $unicodeName + ' build'
+        $outputName = $unicodeName + ' output'
+        [IO.File]::WriteAllText($env:MOBU_CI_FIXTURE_LOG, '')
+        Invoke-CiTestLocation $fixtureRoot $processDirectory {
+            & $ciScript -Mode PackageInput -Tag 'v0.2.1' -PluginPath (Join-Path $inputName 'plugin.dll') `
+                -MetadataPath (Join-Path $inputName 'plugin.json') -BuildDirectory $buildName -OutputDirectory $outputName
+        }
+        $calls = Get-FixtureCalls
+        Require (($calls.kind -join ',') -eq 'SourceCheck,InputVerify,Package,Verify') 'Relative arguments changed the CI call order.'
+        Require ($calls[1].plugin -ceq (Join-Path (Join-Path $fixtureRoot $inputName) 'plugin.dll')) 'The DLL argument was not resolved from PowerShell location.'
+        Require ($calls[1].metadata -ceq (Join-Path (Join-Path $fixtureRoot $inputName) 'plugin.json')) 'The metadata argument was not resolved from PowerShell location.'
+        Require ($calls[0].report -ceq (Join-Path (Join-Path $fixtureRoot $buildName) 'public-source-results.json')) 'The build/report argument was not resolved from PowerShell location.'
+        Require ($calls[2].output -ceq (Join-Path $fixtureRoot $outputName)) 'The output argument was not resolved from PowerShell location.'
+        Require ([IO.File]::Exists((Join-Path (Join-Path $fixtureRoot $buildName) 'public-ci-summary.json'))) 'The CI summary used the process directory.'
+    }
+    Check 'CI Core resolves a relative build directory before passing it to the build entry' {
+        [IO.File]::WriteAllText($env:MOBU_CI_FIXTURE_LOG, '')
+        Invoke-CiTestLocation $fixtureRoot $processDirectory {
+            & $ciScript -Mode Core -BuildDirectory ($unicodeName + ' core build')
+        }
+        $calls = Get-FixtureCalls
+        Require ($calls[1].buildDirectory -ceq (Join-Path $fixtureRoot ($unicodeName + ' core build'))) 'The Core build argument remained relative.'
+    }
+    Check 'CI package paths support a FileSystem PowerShell drive' {
+        $driveName = 'MoBuCi' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+        $null = New-PSDrive -Name $driveName -PSProvider FileSystem -Root $fixtureRoot
+        try {
+            [IO.File]::WriteAllText($env:MOBU_CI_FIXTURE_LOG, '')
+            Invoke-CiTestLocation $fixtureRoot $processDirectory {
+                & $ciScript -Mode PackageInput -Tag 'v0.2.1' -PluginPath ($driveName + ':\local-plugin.dll') `
+                    -MetadataPath ($driveName + ':\local-plugin.dll.json') -BuildDirectory ($driveName + ':\drive build') `
+                    -OutputDirectory ($driveName + ':\' + $unicodeName + ' drive output')
+            }
+            $calls = Get-FixtureCalls
+            Require ($calls[1].plugin -ceq $inputPlugin -and $calls[1].metadata -ceq $inputMetadata) 'The FileSystem drive inputs were not resolved.'
+            Require ($calls[2].output -ceq (Join-Path $fixtureRoot ($unicodeName + ' drive output'))) 'The FileSystem drive output was not resolved.'
+        }
+        finally { Remove-PSDrive -Name $driveName }
+    }
+    Check 'CI explicitly rejects non-FileSystem output paths before delegating' {
+        [IO.File]::WriteAllText($env:MOBU_CI_FIXTURE_LOG, '')
+        Reject { & $ciScript -Mode Core -OutputDirectory 'Env:PATH' -BuildDirectory $ciBuild } 'FileSystem'
+        Require ((Get-FixtureCalls).Count -eq 0) 'A non-FileSystem output reached a delegated operation.'
+    }
+    Check 'CI resolves FileSystem-qualified relative paths before delegating' {
+        [IO.File]::WriteAllText($env:MOBU_CI_FIXTURE_LOG, '')
+        Invoke-CiTestLocation $fixtureRoot $processDirectory {
+            & $ciScript -Mode PackageInput -Tag 'v0.2.1' -PluginPath 'FileSystem::local-plugin.dll' `
+                -MetadataPath 'FileSystem::local-plugin.dll.json' -BuildDirectory 'FileSystem::qualified build' `
+                -OutputDirectory 'FileSystem::qualified output'
+        }
+        $calls = Get-FixtureCalls
+        Require ($calls[1].plugin -ceq $inputPlugin -and $calls[1].metadata -ceq $inputMetadata) 'The provider-qualified relative inputs were not resolved.'
+        Require ($calls[2].output -ceq (Join-Path $fixtureRoot 'qualified output')) 'The provider-qualified relative output was not resolved.'
     }
 } finally {
     foreach ($name in $environmentBefore.Keys) {

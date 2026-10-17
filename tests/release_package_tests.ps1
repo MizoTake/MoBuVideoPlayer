@@ -133,6 +133,23 @@ function Assert-ManifestEncoding {
     }
 }
 
+function Invoke-PackageTestLocation {
+    param([string]$WorkingDirectory, [string]$ProcessDirectory, [scriptblock]$Body)
+    $locationBefore = Get-Location
+    $processBefore = [IO.Directory]::GetCurrentDirectory()
+    try {
+        Set-Location -LiteralPath $WorkingDirectory
+        [IO.Directory]::SetCurrentDirectory($ProcessDirectory)
+        Assert-True ([IO.Path]::GetFullPath('relative-location-probe') -cne (Join-Path $WorkingDirectory 'relative-location-probe')) 'The regression setup did not separate PowerShell and process locations.'
+        & $Body
+        Assert-True ([IO.Directory]::GetCurrentDirectory() -ceq $ProcessDirectory) 'A package entry changed the process working directory.'
+    }
+    finally {
+        Set-Location -LiteralPath $locationBefore.Path
+        [IO.Directory]::SetCurrentDirectory($processBefore)
+    }
+}
+
 try {
     [IO.Directory]::CreateDirectory($fixtureRoot) | Out-Null
     $script:InstallSource = Join-Path $fixtureRoot 'source'
@@ -304,8 +321,87 @@ try {
             }
             finally { [IO.File]::WriteAllBytes($inputPlugin, $original) }
         }
+        $unicodeName = (-join [char[]]@(0x65e5, 0x672c, 0x8a9e)) + ' path'
+        $processDirectory = Join-Path $fixtureRoot 'process-directory'
+        [IO.Directory]::CreateDirectory($processDirectory) | Out-Null
+        $unicodeInput = Join-Path $fixtureRoot ($unicodeName + ' input')
+        [IO.Directory]::CreateDirectory($unicodeInput) | Out-Null
+        Copy-Item -LiteralPath $inputPlugin -Destination (Join-Path $unicodeInput 'MoBuVideoPlayer.dll')
+        Invoke-Case 'Packaging resolves a relative Unicode DLL and output from PowerShell location' {
+            $relativeOutput = $unicodeName + ' relative output'
+            Invoke-PackageTestLocation $fixtureRoot $processDirectory {
+                & $prebuiltPackageScript -PluginPath (Join-Path ([IO.Path]::GetFileName($unicodeInput)) 'MoBuVideoPlayer.dll') `
+                    -BuildDirectory 'unused build' -OutputDirectory $relativeOutput | Out-Null
+            }
+            $expectedArchive = Join-Path (Join-Path $fixtureRoot $relativeOutput) ([IO.Path]::GetFileName($prebuiltArchive))
+            & $verifyScript -ArchivePath $expectedArchive -RequireChecksum | Out-Null
+        }
+        Invoke-Case 'A relative output folder is resolved from PowerShell location with an absolute DLL' {
+            $relativeOutput = $unicodeName + ' absolute-input output'
+            Invoke-PackageTestLocation $fixtureRoot $processDirectory {
+                & $prebuiltPackageScript -PluginPath $inputPlugin -OutputDirectory $relativeOutput | Out-Null
+            }
+            Assert-True ([IO.File]::Exists((Join-Path (Join-Path $fixtureRoot $relativeOutput) ([IO.Path]::GetFileName($prebuiltArchive))))) 'The package was written under the process directory.'
+        }
+        Invoke-Case 'ZIP verification resolves relative archive, source and report paths from PowerShell location' {
+            $reportName = $unicodeName + ' verification.json'
+            Invoke-PackageTestLocation $fixtureRoot $processDirectory {
+                & $verifyScript -ArchivePath (Join-Path 'prebuilt-output' ([IO.Path]::GetFileName($prebuiltArchive))) `
+                    -CompareSourceRoot 'prebuilt-project' -ReportPath $reportName -RequireChecksum | Out-Null
+            }
+            Assert-True ([IO.File]::Exists((Join-Path $fixtureRoot $reportName))) 'The ZIP report was written under the process directory.'
+        }
+        Invoke-Case 'A relative ZIP report is resolved from PowerShell location with absolute inputs' {
+            $reportName = $unicodeName + ' absolute-input verification.json'
+            Invoke-PackageTestLocation $fixtureRoot $processDirectory {
+                & $verifyScript -ArchivePath $prebuiltArchive -CompareSourceRoot $prebuiltRoot -ReportPath $reportName -RequireChecksum | Out-Null
+            }
+            Assert-True ([IO.File]::Exists((Join-Path $fixtureRoot $reportName))) 'The absolute-input ZIP report used the process directory.'
+        }
+        Invoke-Case 'Packaging and verification support a FileSystem PowerShell drive' {
+            $driveName = 'MoBuPackage' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+            $null = New-PSDrive -Name $driveName -PSProvider FileSystem -Root $fixtureRoot
+            try {
+                Invoke-PackageTestLocation $fixtureRoot $processDirectory {
+                    $driveOutput = $driveName + ':\' + $unicodeName + ' drive output'
+                    & $prebuiltPackageScript -PluginPath ($driveName + ':\supplied-dll\MoBuVideoPlayer.dll') -OutputDirectory $driveOutput | Out-Null
+                    & $verifyScript -ArchivePath (Join-Path $driveOutput ([IO.Path]::GetFileName($prebuiltArchive))) `
+                        -CompareSourceRoot ($driveName + ':\prebuilt-project') -ReportPath ($driveName + ':\drive report.json') -RequireChecksum | Out-Null
+                }
+                Assert-True ([IO.File]::Exists((Join-Path $fixtureRoot 'drive report.json'))) 'The FileSystem drive report was not written.'
+            }
+            finally { Remove-PSDrive -Name $driveName }
+        }
+        Invoke-Case 'Package paths accept FileSystem qualification and literal Unicode bracket names' {
+            $qualifiedOutput = Join-Path $fixtureRoot ($unicodeName + ' [media] ~ output')
+            Invoke-PackageTestLocation $fixtureRoot $processDirectory {
+                & $prebuiltPackageScript -PluginPath ('FileSystem::' + $inputPlugin) -OutputDirectory ('FileSystem::' + $qualifiedOutput) | Out-Null
+                & $verifyScript -ArchivePath ('FileSystem::' + (Join-Path $qualifiedOutput ([IO.Path]::GetFileName($prebuiltArchive)))) `
+                    -CompareSourceRoot ('FileSystem::' + $prebuiltRoot) -ReportPath ('FileSystem::' + (Join-Path $qualifiedOutput 'verification.json')) -RequireChecksum | Out-Null
+            }
+            Assert-True ([IO.File]::Exists((Join-Path $qualifiedOutput 'verification.json'))) 'A literal bracket path was interpreted as wildcard syntax.'
+        }
+        Invoke-Case 'Package and ZIP verifier reject non-FileSystem output providers' {
+            Assert-Fails { & $prebuiltPackageScript -PluginPath $inputPlugin -OutputDirectory 'Env:PATH' } 'FileSystem'
+            Assert-Fails { & $verifyScript -ArchivePath $prebuiltArchive -ReportPath 'Env:PATH' } 'FileSystem'
+        }
+        Invoke-Case 'Package and ZIP verifier resolve FileSystem-qualified relative paths' {
+            $relativeOutput = $unicodeName + ' qualified relative output'
+            Invoke-PackageTestLocation $fixtureRoot $processDirectory {
+                & $prebuiltPackageScript -PluginPath 'FileSystem::supplied-dll\MoBuVideoPlayer.dll' `
+                    -OutputDirectory ('FileSystem::' + $relativeOutput) | Out-Null
+                & $verifyScript -ArchivePath ('FileSystem::' + (Join-Path $relativeOutput ([IO.Path]::GetFileName($prebuiltArchive)))) `
+                    -CompareSourceRoot 'FileSystem::prebuilt-project' -ReportPath 'FileSystem::qualified report.json' -RequireChecksum | Out-Null
+            }
+            Assert-True ([IO.File]::Exists((Join-Path $fixtureRoot 'qualified report.json'))) 'A provider-qualified relative package path used the process directory.'
+        }
     }
     finally { $script:RejectCmake = $false }
+    Invoke-Case 'Build-mode packaging resolves a relative build directory from PowerShell location' {
+        Invoke-PackageTestLocation $fixtureRoot $processDirectory {
+            & $packageScript -SkipBuild -BuildDirectory 'mock-build' -OutputDirectory (Join-Path $fixtureRoot 'relative-build-output') | Out-Null
+        }
+    }
 }
 finally {
     if ($ReportPath) {

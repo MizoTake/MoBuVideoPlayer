@@ -7,8 +7,8 @@ if(MSVC AND CMAKE_GENERATOR MATCHES "Ninja")
     file(MAKE_DIRECTORY "${_probe_dir}")
     file(WRITE "${_probe_dir}/probe.h" "")
     file(WRITE "${_probe_dir}/probe.cpp" "#include \"${_probe_dir}/probe.h\"\n")
-    execute_process(COMMAND "${CMAKE_CXX_COMPILER}" /nologo /showIncludes /EP /TP "${_probe_dir}/probe.cpp"
-        OUTPUT_VARIABLE _probe_output ERROR_VARIABLE _probe_error RESULT_VARIABLE _probe_result)
+    execute_process(COMMAND "${CMAKE_CXX_COMPILER}" /nologo /utf-8 /showIncludes /EP /TP "${_probe_dir}/probe.cpp"
+        ENCODING UTF-8 OUTPUT_VARIABLE _probe_output ERROR_VARIABLE _probe_error RESULT_VARIABLE _probe_result)
     if(NOT _probe_result EQUAL 0)
         message(FATAL_ERROR "Cannot detect the compiler's include dependency prefix: ${_probe_error}")
     endif()

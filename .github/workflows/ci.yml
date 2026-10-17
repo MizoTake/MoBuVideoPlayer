@@ -20,10 +20,12 @@ jobs:
     defaults:
       run:
         shell: pwsh
+        working-directory: source 日本語
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          path: source 日本語
           persist-credentials: false
       - name: Enable the Windows Server media feature when required
         shell: powershell
@@ -49,7 +51,7 @@ jobs:
         with:
           name: native-test-results
           path: |
-            build/ci-core/public-ci-summary.json
-            build/ci-core/public-source-results.json
+            source 日本語/build/ci-core/public-ci-summary.json
+            source 日本語/build/ci-core/public-source-results.json
           if-no-files-found: warn
           retention-days: 14

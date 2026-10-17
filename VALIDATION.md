@@ -157,3 +157,27 @@ GitHub-hosted環境でのワークフロー実行・Draftへの添付・公開�
 今回、MotionBuilderの追加起動や実ユーザー設定の変更は行っていません。
 
 根拠：`build/public-cleanroom-core-final.log`、`build/public-cleanroom-release-focused-final.log`、`build/clean-source-final-inspection.json`、`build/release-input-tests.json`、`build/release-package-manifest-lf-pwsh.json`、`build/release-package-manifest-lf-winps51.json`、`build/public-package-input-final.log`、`build/ci-package-final/input-verification.json`、`build/ci-package-final/package-verification.json`、`build/final-distribution-audit.json`、`build/actionlint-results-final.log`。
+
+## 日本語配置先とPowerShellの相対パスの修正
+
+日本語・空白を含む別フォルダで、修正前のCMake構成がC1083で失敗することを再現しました。
+構成時のコンパイラ呼出しにUTF-8を指定し、CMakeがその出力を読む際の文字コードもUTF-8に明示しました。
+同じ配置先で構成とビルドが成功し、Ninjaの依存情報にプロジェクトのヘッダーが登録されていることを確認しました。
+ヘッダーの内容を変えず更新日時だけを進めると、依存する2つのオブジェクトが再構築され、次のビルドは `no work to do` になりました。
+
+PowerShellの現在位置とプロセスのCurrentDirectoryが異なる状態でも、相対パス引数を現在のPowerShellのFileSystemから解決するよう、開発・配布用の9スクリプトを修正しました。
+同梱ファイルの追加やプロセス全体のCurrentDirectory変更は行いません。
+日本語・空白・角括弧、PSDrive、FileSystem修飾パス、未作成の出力先、非FileSystemパスの拒否を回帰検証しました。
+入力準備・検証23項目、配布物31項目ずつ（PowerShell 5.1 / 7）、CI処理29項目が成功しています。
+既存の導入・解除47項目ずつ（PowerShell 5.1 / 7）も成功しました。
+
+最新ソースを日本語・空白の配置先へコピーし、元フォルダをPATHから除外し、MOBU_ROOTを空にした状態で確認しました。
+そのフォルダへ移動して `scripts/ci-build.ps1 -Mode Core -BuildDirectory ./build/core` を実行し、ReleaseビルドとCTestの13スイートがすべて成功しました（60.26秒）。
+実DLLを使う入力準備、PackageInput、ZIP検査も、移動後の相対パス引数で成功しました。
+レポートの保存先が移動後のフォルダであることと、プロセスのCurrentDirectoryが不変であることも確認しました。
+通常のGitHub CIも、日本語・空白を含むフォルダへcheckoutして検証する設定にしました。GitHub上での実行は未確認です。
+
+C++ソースは変更していません。更新した配布ZIPには実ホスト検証済みと同じSHA256のDLLを使い、最新のソース指紋を持つ入力JSONとZIPのmanifest・SHA256を再生成しました。
+MotionBuilderの追加起動や実ユーザー設定の変更は行っていません。別PCでの受入試験は今回の範囲に含みません。
+
+根拠：`build/path-fixes/japanese-configure-red.log`、`japanese-build-green.log`、`japanese-ninja-deps.log`、`japanese-header-incremental.log`、`japanese-no-work.log`、`japanese-core-all-green.log`、`relative-input-real-green.log`、`relative-package-real-green.log`、`relative-verify-real-green.log`、`build/relative-path-input-green.json`、`build/relative-path-package-green.json`、`build/relative-path-package-green-ps51.json`、`build/relative-path-ci-green.json`。

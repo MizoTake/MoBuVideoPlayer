@@ -8,6 +8,24 @@ param(
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'ReleaseInput.ps1')
+foreach ($pathParameter in @('SourceRoot', 'PluginPath', 'OutputDirectory')) {
+    $pathValue = Get-Variable -Name $pathParameter -ValueOnly
+    if ([string]::IsNullOrEmpty($pathValue)) { continue }
+    $pathProvider = $null
+    $pathDrive = $null
+    $resolvedPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath(
+        $pathValue, [ref]$pathProvider, [ref]$pathDrive)
+    if ($pathProvider.Name -ne 'FileSystem') { throw "$pathParameter must use the FileSystem provider." }
+    if (-not [IO.Path]::IsPathRooted($resolvedPath)) {
+        $resolvedPath = Join-Path $ExecutionContext.SessionState.Path.CurrentFileSystemLocation.Path $resolvedPath
+    } elseif ($resolvedPath -match '^[\\/](?![\\/])') {
+        $resolvedPath = Join-Path $ExecutionContext.SessionState.Path.CurrentFileSystemLocation.Drive.Root $resolvedPath.TrimStart('\', '/')
+    }
+    $resolvedPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath(
+        $resolvedPath, [ref]$pathProvider, [ref]$pathDrive)
+    if ($pathProvider.Name -ne 'FileSystem') { throw "$pathParameter must use the FileSystem provider." }
+    Set-Variable -Name $pathParameter -Value ([IO.Path]::GetFullPath($resolvedPath))
+}
 if (-not $PluginPath) { $PluginPath = Join-Path $SourceRoot 'build/package/plugins/MoBuVideoPlayer.dll' }
 if (-not $OutputDirectory) { $OutputDirectory = Join-Path $SourceRoot 'dist/release-input' }
 $source = Get-ReleaseInputSource -SourceRoot $SourceRoot
@@ -27,7 +45,7 @@ $metadata = [ordered]@{
     native_source_sha256 = $source.SHA256
     native_files = $source.Files
 }
-if ([IO.Path]::GetFullPath($PluginPath) -ine $destination) { [IO.File]::Copy([IO.Path]::GetFullPath($PluginPath), $destination, $true) }
+if ($PluginPath -ine $destination) { [IO.File]::Copy($PluginPath, $destination, $true) }
 if ((Get-ReleaseInputPluginHash -PluginPath $destination) -cne $hash) { throw 'The copied release DLL does not match the selected input.' }
 $metadataJson = ($metadata | ConvertTo-Json -Depth 5).Replace("`r`n", "`n").Replace("`r", "`n")
 [IO.File]::WriteAllText($metadataPath, ($metadataJson + "`n"), [Text.UTF8Encoding]::new($false))

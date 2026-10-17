@@ -9,7 +9,20 @@ function Get-ReleaseInputHash {
 
 function Get-ReleaseInputSource {
     param([Parameter(Mandatory = $true)][string]$SourceRoot)
-    $rootPath = [IO.Path]::GetFullPath($SourceRoot).TrimEnd('\', '/')
+    $pathProvider = $null
+    $pathDrive = $null
+    $resolvedPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath(
+        $SourceRoot, [ref]$pathProvider, [ref]$pathDrive)
+    if ($pathProvider.Name -ne 'FileSystem') { throw 'SourceRoot must use the FileSystem provider.' }
+    if (-not [IO.Path]::IsPathRooted($resolvedPath)) {
+        $resolvedPath = Join-Path $ExecutionContext.SessionState.Path.CurrentFileSystemLocation.Path $resolvedPath
+    } elseif ($resolvedPath -match '^[\\/](?![\\/])') {
+        $resolvedPath = Join-Path $ExecutionContext.SessionState.Path.CurrentFileSystemLocation.Drive.Root $resolvedPath.TrimStart('\', '/')
+    }
+    $resolvedPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath(
+        $resolvedPath, [ref]$pathProvider, [ref]$pathDrive)
+    if ($pathProvider.Name -ne 'FileSystem') { throw 'SourceRoot must use the FileSystem provider.' }
+    $rootPath = [IO.Path]::GetFullPath($resolvedPath)
     $definition = [IO.File]::ReadAllText((Join-Path $rootPath 'CMakeLists.txt'))
     if ($definition -notmatch 'project\(MoBuVideoPlayer VERSION ([0-9]+\.[0-9]+\.[0-9]+)') {
         throw 'The native source project version is missing.'

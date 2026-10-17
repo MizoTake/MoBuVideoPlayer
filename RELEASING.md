@@ -3,7 +3,7 @@
 手元で動作を確認したDLLを入力として、導入・解除PS1入りZIPとSHA256をGitHubのDraft Releaseへ添付します。
 CIはGitHub-hostedの `windows-2022` で動き、MotionBuilder SDKやセルフホストランナーを必要としません。
 プラグインDLLの再ビルドは行いません。
-公開先は未指定のため、リポジトリ作成・push・アップロードはまだ行っていません。
+公開先は [MizoTake/MoBuVideoPlayer](https://github.com/MizoTake/MoBuVideoPlayer) です。配布版はGitタグとReleaseで管理します。
 
 ## 通常のCI
 
@@ -52,14 +52,14 @@ CIと同じパッケージ処理をローカルで実行できます。
 
 1. CMakeLists.txtの版数と `docs/releases/<版数>.md`、検証記録を揃えます。配布版の表示はGitタグとReleaseにまとめ、READMEに製品の固定版数は書きません。
 2. 上記の検査・入力準備を実行し、公開対象のソースをコミットします。
-3. 公開先が決まったらリポジトリとoriginを用意し、ソースと版数タグをpushします。
+3. originの公開先を確認し、ソースと版数タグをpushします。
 4. 同じタグのDraft Releaseを作り、DLLとJSONの2点を添付します。
 5. `release.yml` をタグ指定で手動実行します。
 
-以下のOWNER/REPOSITORYは実際の公開先に置き換えてください。
+以下の版数は対象リリースに合わせてください。
 
 ~~~powershell
-$releaseRepo = 'OWNER/REPOSITORY'
+$releaseRepo = 'MizoTake/MoBuVideoPlayer'
 git tag v0.2.1
 git push origin main
 git push origin v0.2.1

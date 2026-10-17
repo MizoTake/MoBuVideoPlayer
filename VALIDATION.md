@@ -216,3 +216,18 @@ VFRは映像1.88秒／音声3.0293333秒、Bフレームno-edit入力は映像�
 検証スクリプトは専用ホストを示す環境変数と期待DLLハッシュを必須にしています。シーンを切り替えるため、共有作業中のホストでは実行しないでください。
 
 根拠：`build/remaining-review-noedit/raw-aac-comparison.json`、`fixed-raw-aac-comparison.json`、`build/track-ends-audio-red.log`、`track-ends-cache-red.log`、`track-ends-fresh-sdk.log`、`track-ends-sdk/audio-fixtures/track-ends-reference.json`、`track-ends-sdk/Testing/Temporary/LastTest.log`、`track-ends-japanese-core.log`、`artifacts/ends-host-001/story-results.json`、`ends/track-ends-results.json`、`ends/track-ends-reopened.fbx`。
+
+## 導入済みDLLの更新と通常起動での確認（2026-10-17）
+
+開いていた専用検証シーンを別名保存し、旧DLLと登録設定をバックアップしてから、登録済みの導入先を上記SHA256の新版DLLへ更新しました。
+検証ウィンドウだけを一度再起動し、テスト用のプラグイン検索パスと設定保存先の上書きなしで確認しました。
+明示的にDLLを読み込む前に、自動ロード済みのモジュールが通常の登録先にあることと、配布対象DLLとのハッシュ一致を検査しました。
+
+導入とシーン復元の65項目、Storyの描画・実音声出力・標準編集・FBX再読込の58項目、映像と音声の長さが異なる8種類のMP4の596項目が、再起動後の同じプロセスですべて成功しました。
+最後に更新前の24本のStoryトラックと全クリップの開始・終了・トリム・速度・Mute、Takeを復元し、保存時と一致することを確認して別名保存しました。
+独立監査も29項目成功しました。既存の別作業ホストを停止・再起動する操作は行っていません。
+
+DLL更新時には登録設定のバイト一致を確認しました。通常起動後には設定ファイルの空行数が変わりましたが、417行の非空行の順序・内容は一致しています。
+この導入確認ではソースとDLLを再生成していません。GitHub-hosted CIの実行結果は各ReleaseとActionsで確認してください。
+
+根拠：`artifacts/installed-update-001/scene-backup.json`、`installed-update.json`、`restart.json`、`host/installed-host-results.json`、`host/story-results.json`、`host/ends/track-ends-results.json`、`independent-audit.json`。

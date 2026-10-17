@@ -4,6 +4,8 @@ MotionBuilder 2026 / Windows x64用の動画・音声プラグインです。
 Windows標準のMedia Foundationでデコードし、標準Storyの動画・音声クリップ、またはカメラ背景・前景・テクスチャとして利用します。
 QuickTime、FFmpeg、VLCなどの再生ランタイムは必要ありません。
 
+導入用ZIPとチェックサムは [最新のRelease](https://github.com/MizoTake/MoBuVideoPlayer/releases/latest) から取得できます。
+
 ## 導入とStoryでの操作
 
 1. 配布ZIPを保管して使うフォルダへ展開し、MotionBuilderを終了します。
@@ -175,7 +177,7 @@ Storyテストは実GL画素、WASAPI loopbackの音声・Mute、FBX保存・再
 
 ## GitHubとリリースCI
 
-配布版のバージョンはGitタグとReleaseで確認してください。
+配布版のバージョンは [Gitタグ](https://github.com/MizoTake/MoBuVideoPlayer/tags) と [Release](https://github.com/MizoTake/MoBuVideoPlayer/releases) で確認してください。
 PRとブランチ更新ではGitHubのWindowsランナーでSDK不要の検証を実行します。
 リリースでは、手元で確認したDLLとその検査用JSONをDraft Releaseへ用意し、CIが版数・ハッシュ・ソースの指紋を照合します。
 導入・解除PS1入りZIPとSHA256を同じDraftへ添付します。CIでプラグインDLLの再ビルドは行いません。

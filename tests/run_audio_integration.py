@@ -405,6 +405,10 @@ def main() -> int:
 
         aac = directory / "compressed.m4a"
         ffmpeg("-i", str(stereo), "-c:a", "aac", "-b:a", "192k", str(aac))
+        inspection = json.loads(execute([str(args.test_exe), "--inspect-audio", str(aac)]).stdout)
+        print("INFO AAC Source Reader " + json.dumps(inspection, sort_keys=True), flush=True)
+        timeline = json.loads(execute([str(args.test_exe), "--timeline", str(aac)]).stdout)
+        print("INFO AAC timeline " + json.dumps(timeline, sort_keys=True), flush=True)
         info, aac_output = export(aac, "aac")
         _, aac_rate, _, _, pcm = read_wave(aac_output)
         require(info["hasAudio"] and info["channels"] == 2 and aac_rate == 48000,
@@ -414,7 +418,8 @@ def main() -> int:
         values = array.array("h", pcm)
         rms = math.sqrt(sum(value * value for value in values) / len(values))
         print("INFO AAC output " + json.dumps({"rms": rms, "actual_frames": len(pcm) // 4,
-                                               "reported_frames": info["frameCount"]}), flush=True)
+                                               "reported_frames": info["frameCount"],
+                                               "first_presentation100ns": info["firstPresentation100ns"]}), flush=True)
         require(2000 < rms < 5000 and abs(len(pcm) // 4 - 48000) <= 2048,
                 "AAC decoded audio has expected energy and duration")
         require(info["frameCount"] == 48000, "AAC edit list removes priming and trailing padding")

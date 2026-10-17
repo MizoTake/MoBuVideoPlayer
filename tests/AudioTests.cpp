@@ -2,6 +2,7 @@
 #include "mobu/media/Decoder.h"
 
 #include <windows.h>
+#include <bcrypt.h>
 #include <mfapi.h>
 #include <mferror.h>
 #include <mfidl.h>
@@ -9,6 +10,7 @@
 #include <wrl/client.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstdlib>
 #include <cwchar>
@@ -41,6 +43,23 @@ std::string GuidText(const GUID& value)
         result.push_back(static_cast<char>(*character));
     }
     return result;
+}
+
+std::string SampleSha256(const BYTE* data, DWORD length)
+{
+    BCRYPT_ALG_HANDLE algorithm = nullptr;
+    if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) < 0) {
+        throw std::runtime_error("Cannot open diagnostic sample digest provider.");
+    }
+    std::array<UCHAR, 32> digest{};
+    const auto result = BCryptHash(algorithm, nullptr, 0, const_cast<BYTE*>(data), length,
+        digest.data(), static_cast<ULONG>(digest.size()));
+    BCryptCloseAlgorithmProvider(algorithm, 0);
+    if (result < 0) { throw std::runtime_error("Cannot compute diagnostic sample digest."); }
+    std::ostringstream text;
+    text << std::hex << std::setfill('0');
+    for (const auto value : digest) { text << std::setw(2) << static_cast<unsigned>(value); }
+    return text.str();
 }
 
 void PrintAttributes(IMFAttributes* attributes)
@@ -159,13 +178,14 @@ void InspectAudioReader(const std::filesystem::path& source, bool decode)
             lastDuration = duration;
             std::cout << ",\"duration100ns\":" << duration << ",\"bytes\":" << bytes << ",\"attributes\":";
             PrintAttributes(sample.Get());
+            ComPtr<IMFMediaBuffer> buffer;
+            Check(sample->ConvertToContiguousBuffer(&buffer), "Read diagnostic sample buffer");
+            BYTE* data = nullptr;
+            DWORD length = 0;
+            Check(buffer->Lock(&data, nullptr, &length), "Lock diagnostic sample buffer");
+            std::cout << ",\"sha256\":\"" << SampleSha256(data, length) << '"';
             if (decode) {
                 std::cout << ",\"frames\":" << bytes / (channels * 2);
-                ComPtr<IMFMediaBuffer> buffer;
-                Check(sample->ConvertToContiguousBuffer(&buffer), "Read diagnostic PCM buffer");
-                BYTE* data = nullptr;
-                DWORD length = 0;
-                Check(buffer->Lock(&data, nullptr, &length), "Lock diagnostic PCM buffer");
                 std::cout << ",\"head_samples\":[";
                 const auto values = reinterpret_cast<const std::int16_t*>(data);
                 for (DWORD offset = 0; offset < (std::min)(DWORD{32}, length / 2); ++offset) {
@@ -173,8 +193,8 @@ void InspectAudioReader(const std::filesystem::path& source, bool decode)
                     std::cout << values[offset];
                 }
                 std::cout << ']';
-                Check(buffer->Unlock(), "Unlock diagnostic PCM buffer");
             }
+            Check(buffer->Unlock(), "Unlock diagnostic sample buffer");
         }
         std::cout << '}';
         if ((flags & MF_SOURCE_READERF_ENDOFSTREAM) != 0) { finished = true; break; }

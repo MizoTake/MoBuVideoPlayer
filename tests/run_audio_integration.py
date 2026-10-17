@@ -147,6 +147,41 @@ def alter_edit_list(data: bytes, *, version_one: bool = False, invalid_rate: boo
     return bytes(output)
 
 
+def trim_audio_start(data: bytes, seconds: Fraction) -> bytes:
+    output = bytearray(data)
+    entries: dict[bytes, list[int]] = {}
+
+    def visit(begin: int, end: int) -> None:
+        position = begin
+        while position + 8 <= end:
+            size, tag = struct.unpack_from(">I4s", output, position)
+            assert 8 <= size <= end - position
+            payload = position + 8
+            entries.setdefault(tag, []).append(payload)
+            if tag in (b"moov", b"trak", b"mdia", b"edts"):
+                visit(payload, position + size)
+            position += size
+        assert position == end
+
+    visit(0, len(output))
+    for tag in (b"mvhd", b"tkhd", b"mdhd", b"elst"):
+        assert len(entries[tag]) == 1 and output[entries[tag][0]] == 0
+    movie, track, media, edit = (entries[tag][0] for tag in (b"mvhd", b"tkhd", b"mdhd", b"elst"))
+    assert struct.unpack_from(">I", output, edit + 4)[0] == 1
+    movie_scale = struct.unpack_from(">I", output, movie + 12)[0]
+    media_scale = struct.unpack_from(">I", output, media + 12)[0]
+    movie_trim, media_trim = seconds * movie_scale, seconds * media_scale
+    assert movie_trim.denominator == media_trim.denominator == 1
+    for offset in (movie + 16, track + 20, edit + 8):
+        duration = struct.unpack_from(">I", output, offset)[0]
+        assert duration > movie_trim
+        struct.pack_into(">I", output, offset, duration - int(movie_trim))
+    media_start = struct.unpack_from(">i", output, edit + 12)[0]
+    assert media_start >= 0
+    struct.pack_into(">i", output, edit + 12, media_start + int(media_trim))
+    return bytes(output)
+
+
 def synthetic_timing(decode: list[tuple[int, int]], composition: list[tuple[int, int]],
                      *, signed: bool = True, media_start: int | None = None) -> bytes:
     def atom(tag: bytes, payload: bytes) -> bytes:
@@ -430,6 +465,35 @@ def main() -> int:
         reference_samples = array.array("h", reference)
         difference = compare_pcm_samples(values, reference_samples, info["channels"], "AAC reference phase")
         require(difference <= 3, "AAC phase matches independent decoded reference within three levels on average")
+
+        trimmed_aac = directory / "trimmed-audio-edit.m4a"
+        trimmed_aac.write_bytes(trim_audio_start(aac.read_bytes(), Fraction(1, 2)))
+        trim_probe = json.loads(execute([
+            args.ffprobe, "-v", "error", "-show_packets", "-show_streams", "-show_data_hash", "sha256",
+            "-show_entries", "packet=pts,duration,data_hash:stream=duration_ts,time_base", "-of", "json", str(trimmed_aac),
+        ]).stdout)
+        trim_stream = trim_probe["streams"][0]
+        require(Fraction(trim_stream["time_base"]) * int(trim_stream["duration_ts"]) == Fraction(1, 2),
+                "intentional AAC edit exposes a half-second presentation duration")
+        skip = trim_probe["packets"][0]["side_data_list"][0]["skip_samples"]
+        require(skip > aac_rate // 2 and int(trim_probe["packets"][0]["pts"]) == -skip,
+                "intentional AAC edit adds half a second to encoder priming without dropping source packets")
+        trim_inspection = json.loads(execute([str(args.test_exe), "--inspect-audio", str(trimmed_aac)]).stdout)
+        print("INFO trimmed AAC Source Reader " + json.dumps(trim_inspection, sort_keys=True), flush=True)
+        native_samples = next(reader for reader in trim_inspection["readers"] if not reader["decoded"])["samples"]
+        require([sample["sha256"] for sample in native_samples]
+                == [packet["data_hash"].removeprefix("SHA256:") for packet in trim_probe["packets"][:len(native_samples)]],
+                "intentional AAC edit retains the original initial packet payloads in the native reader")
+        trimmed_info, trimmed_output = export(trimmed_aac, "trimmed-audio-edit")
+        require(trimmed_info["frameCount"] == aac_rate // 2 and trimmed_info["duration100ns"] == 5_000_000,
+                "intentional AAC edit trims exactly the first audible half second")
+        trimmed_reference = execute([args.ffmpeg, "-v", "error", "-i", str(trimmed_aac),
+                                     "-f", "s16le", "-c:a", "pcm_s16le", "pipe:1"]).stdout
+        trimmed_pcm = read_wave(trimmed_output)[4]
+        trimmed_difference = compare_pcm_samples(array.array("h", trimmed_pcm), array.array("h", trimmed_reference),
+                                                 info["channels"], "Intentional AAC edit reference phase")
+        require(len(trimmed_pcm) == len(trimmed_reference) and trimmed_difference <= 3,
+                "intentional AAC edit preserves independently decoded reference length and phase")
 
         silent_video = directory / "silent.mp4"
         video_command = ["-f", "lavfi", "-i", "color=c=blue:s=64x64:r=10:d=1", "-an",

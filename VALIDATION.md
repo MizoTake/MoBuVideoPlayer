@@ -254,3 +254,24 @@ DLL内の個人パス・PC名・認証情報のパターン検査も成功しま
 マウス・キー入力は使用せず、別作業のホストには変更を加えていません。
 
 根拠：`build/github-ci-path-red.json`、`github-ci-path-green.json`、`ci-audio-encoding-red.log`、`ci-audio-encoding-green.log`、`server-seek-probe/regression-before.log`、`server-seek-probe/regression-after.log`、`server-seek-sdk-build.log`、`server-seek-sdk/Testing/Temporary/LastTest.log`、`artifacts/release-validation-001/scene-backup.json`、`host/installed-host-results.json`、`host/story-results.json`、`host/ends/track-ends-results.json`。
+
+## OSのMP4ソースが移動するAAC時刻原点（2026-10-17）
+
+GitHubのWindows Server 2022では、同じAACファイルの圧縮入力とPCM出力がともに213,333単位（100ns）の時刻から始まり、Windows 11ではともに0から始まる差を観測しました。
+両環境で圧縮パケット48個・PCM 49,152フレームと先頭波形は一致しました。
+従来処理はAACのprimingを正しく除去できず、1,024サンプルの遅延となっていました。独立参照との平均差は約5,235.88、最適な比較位置の差は1,024サンプルで、位置を合わせた平均差は約0.168でした。
+
+静的なMP4時刻表を持つAACについて、OSが返す最初の圧縮パケットの時刻とファイル内の時刻表を照合し、その差をPCMの時刻へ補正します。
+OSの版名や1,024という固定値では分岐せず、edit listとサンプル間の空白は従来どおり適用します。
+キャッシュ世代を6に更新し、補正前のキャッシュを再利用しません。
+標準出力の診断に平均差・相関・位相差などを加え、既存の平均3量子化レベル以内という品質基準は維持しました。
+時刻原点の回帰12項目を追加し、Windows 11で音声212項目とCTest全13スイートが成功しました（67.58秒）。
+修正を反映した[GitHub ActionsのWindows Server 2022実行](https://github.com/MizoTake/MoBuVideoPlayer/actions/runs/39014008025)でも、CTest全13スイート、デコーダ80項目、音声212項目、公開ソース59ファイルの検査が成功しました。
+
+AACの元のprimingに加えて可聴部分の先頭0.5秒を切るedit listのケースも追加しました。
+FFprobeのSkipSamples、ファイルの物理先頭パケットとOSが返す先頭パケットのSHA256を独立に照合し、先頭パケットが破棄されていないことを確認しました。
+出力は24,000フレーム・0.5秒で、参照との位相差0、平均差約0.226でした。追加後の音声218項目も成功しました。
+修正後のSDKビルドはCTest全13スイートが成功しました（65.44秒）。
+最終配布候補DLLのSHA256は `7b03feb2801fbc58867211c2cac81b96bc2da1c1d566de68974756673c5ab24c` です。
+
+根拠：`build/github-ci-failure-3.log`、`github-ci-failure-4.log`、`aac-reader-win11.json`、`aac-clock-local-regression.log`、`aac-clock-core-ctest.log`、`github-aac-clock-ci.log`、`github-green-core/public-ci-summary.json`、`aac-trim-regression.log`、`aac-clock-sdk-build.log`。

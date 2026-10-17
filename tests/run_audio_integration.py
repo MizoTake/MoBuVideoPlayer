@@ -60,6 +60,60 @@ def integers(pcm: bytes, bits: int) -> list[int]:
             for position in range(0, len(pcm), width)]
 
 
+def compare_pcm_samples(actual: array.array, reference: array.array, channels: int,
+                        name: str) -> float:
+    count = min(len(actual), len(reference))
+    if not count:
+        raise AssertionError(name + " has no samples to compare")
+    errors = [a - b for a, b in zip(actual, reference)]
+    difference = sum(abs(error) for error in errors) / len(actual)
+    error_energy = sum(error * error for error in errors)
+    actual_energy = sum(sample * sample for sample in actual[:count])
+    reference_energy = sum(sample * sample for sample in reference[:count])
+    actual_mean = sum(actual[:count]) / count
+    reference_mean = sum(reference[:count]) / count
+    covariance = sum((a - actual_mean) * (b - reference_mean)
+                     for a, b in zip(actual, reference))
+    variance_product = ((actual_energy - count * actual_mean * actual_mean)
+                        * (reference_energy - count * reference_mean * reference_mean))
+    frame_count = count // channels
+    maximum_lag = min(2048, (frame_count - 1) // 3)
+    positions = range(maximum_lag, min(frame_count - maximum_lag, maximum_lag + 8192), 16)
+
+    def lag_difference(lag: int) -> float:
+        return sum(abs(actual[(frame + lag) * channels + channel]
+                       - reference[frame * channels + channel])
+                   for frame in positions for channel in range(channels)) / (len(positions) * channels)
+
+    coarse = sorted((lag_difference(lag), abs(lag), lag)
+                    for lag in range(-maximum_lag, maximum_lag + 1, 16))[:8]
+    candidates = {0}
+    for _, _, lag in coarse:
+        candidates.update(range(max(-maximum_lag, lag - 16), min(maximum_lag, lag + 16) + 1))
+    best_difference, _, best_lag = min((lag_difference(lag), abs(lag), lag) for lag in candidates)
+    segment_frames = min(1024, frame_count)
+    segments = {}
+    for segment, first in (("head", 0), ("middle", (frame_count - segment_frames) // 2),
+                           ("tail", frame_count - segment_frames)):
+        begin, end = first * channels, (first + segment_frames) * channels
+        segments[segment] = sum(abs(error) for error in errors[begin:end]) / (end - begin)
+    metrics = {
+        "name": name, "channels": channels,
+        "actual_frames": len(actual) // channels, "reference_frames": len(reference) // channels,
+        "mean_absolute_error": difference, "peak_absolute_error": max(map(abs, errors)),
+        "actual_rms": math.sqrt(actual_energy / count),
+        "reference_rms": math.sqrt(reference_energy / count),
+        "error_rms": math.sqrt(error_energy / count),
+        "snr_db": (10 * math.log10(reference_energy / error_energy) if reference_energy else "negative infinity")
+                  if error_energy else "infinity",
+        "zero_lag_correlation": covariance / math.sqrt(variance_product) if variance_product > 0 else 0,
+        "best_lag_frames": best_lag, "best_lag_mean_absolute_error": best_difference,
+        "lag_search_limit_frames": maximum_lag, "segment_mean_absolute_error": segments,
+    }
+    print("INFO PCM comparison " + json.dumps(metrics, sort_keys=True), flush=True)
+    return difference
+
+
 def alter_edit_list(data: bytes, *, version_one: bool = False, invalid_rate: bool = False,
                     truncated: bool = False, multiple_edits: bool = False) -> bytes:
     output = bytearray()
@@ -313,6 +367,9 @@ def main() -> int:
                 actual_samples = integers(pcm, bits)
                 reference_samples = integers(reference, bits)
                 maximum = max(abs(a - b) for a, b in zip(actual_samples, reference_samples))
+                print("INFO PCM precision " + json.dumps({"name": name, "actual_bytes": len(pcm),
+                                                          "reference_bytes": len(reference),
+                                                          "peak_absolute_error": maximum}), flush=True)
                 require(len(pcm) == len(reference) and maximum <= 1,
                         name + " PCM24 playback conversion differs by at most one quantization level")
             if channels == 6:
@@ -356,13 +413,15 @@ def main() -> int:
                 "AAC keeps the existing PCM16 policy without a new precision conversion")
         values = array.array("h", pcm)
         rms = math.sqrt(sum(value * value for value in values) / len(values))
+        print("INFO AAC output " + json.dumps({"rms": rms, "actual_frames": len(pcm) // 4,
+                                               "reported_frames": info["frameCount"]}), flush=True)
         require(2000 < rms < 5000 and abs(len(pcm) // 4 - 48000) <= 2048,
                 "AAC decoded audio has expected energy and duration")
         require(info["frameCount"] == 48000, "AAC edit list removes priming and trailing padding")
         reference = execute([args.ffmpeg, "-v", "error", "-i", str(aac),
                              "-f", "s16le", "-c:a", "pcm_s16le", "pipe:1"]).stdout
         reference_samples = array.array("h", reference)
-        difference = sum(abs(a - b) for a, b in zip(values, reference_samples)) / len(values)
+        difference = compare_pcm_samples(values, reference_samples, info["channels"], "AAC reference phase")
         require(difference <= 3, "AAC phase matches independent decoded reference within three levels on average")
 
         silent_video = directory / "silent.mp4"
@@ -405,7 +464,8 @@ def main() -> int:
         require(origin["movieVideoOrigin100ns"] == 0 and combined_info["frameCount"] == 48000,
                 "B-frame video with AAC retains the complete aligned second")
         combined_samples = array.array("h", read_wave(combined_output)[4])
-        difference = sum(abs(a - b) for a, b in zip(combined_samples, reference_samples)) / len(combined_samples)
+        difference = compare_pcm_samples(combined_samples, reference_samples, combined_info["channels"],
+                                         "B-frame video AAC reference phase")
         require(difference <= 3, "B-frame video and AAC preserve reference phase")
 
         delayed_video = directory / "video-delayed.mp4"
@@ -419,7 +479,8 @@ def main() -> int:
                 "video-normalized audio trims exactly the half-second before first video")
         delayed_samples = array.array("h", read_wave(delayed_output)[4])
         reference_tail = reference_samples[24000 * 2:]
-        difference = sum(abs(a - b) for a, b in zip(delayed_samples, reference_tail)) / len(delayed_samples)
+        difference = compare_pcm_samples(delayed_samples, reference_tail, delayed_info["channels"],
+                                         "Leading empty edit AAC reference phase")
         require(difference <= 3, "leading empty video edit keeps the correct AAC phase")
 
         signed_timing = directory / "signed-timing.mp4"
@@ -494,7 +555,7 @@ def main() -> int:
             reference_pcm = (directory / item["audio_reference_file"]).read_bytes()
             samples = array.array("h", pcm)
             reference_samples = array.array("h", reference_pcm)
-            difference = sum(abs(a - b) for a, b in zip(samples, reference_samples)) / len(samples)
+            difference = compare_pcm_samples(samples, reference_samples, channels, name + " timestamp-aware AAC")
             require(len(pcm) == len(reference_pcm) and difference <= 3,
                     name + " matches timestamp-aware AAC samples within three levels on average")
             gap_bytes = channels * 2

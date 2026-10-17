@@ -243,4 +243,14 @@ GitHubのWindows Server 2022ランナーで、Visual StudioのDevShell初期化�
 OSへ渡すシーク位置を有効な終端に収め、そこから目的の表示フレームまでデコードするよう修正しました。
 末尾表示後に末尾直前へ戻るケースを7入力へ追加し、同じソフトウェア検証は修正前の78成功・2失敗から80項目成功になりました。
 
-根拠：`build/github-ci-path-red.json`、`github-ci-path-green.json`、`ci-audio-encoding-red.log`、`ci-audio-encoding-green.log`、`server-seek-probe/regression-before.log`、`server-seek-probe/regression-after.log`。
+修正後のソースから既存MotionBuilder 2026 SDKで新しいRelease DLLを生成し、CIと同じFFmpeg/FFprobe 9.0.2でCTest全13スイートが成功しました（67.65秒）。
+デコーダは80項目、音声は200項目が成功しています。
+今回の配布対象DLLのSHA256は `0a73b0a0545bf9771c1ff51dd90c51f818308f8bb0ee370d4347312b39bd1ce8` です。
+DLL内の個人パス・PC名・認証情報のパターン検査も成功しました。
+
+このDLLへ登録先を更新する前に、既存の専用検証ウィンドウの24本のStoryトラックを別名保存しました。
+その検証ウィンドウだけを1回再起動し、通常設定からの自動ロードと配布DLLのハッシュ一致を確認しました。
+導入とシーン復元の68項目、Storyの58項目、長さの異なるMP4の8入力596項目が成功し、元の24トラックと編集状態を復元して別名保存しました。
+マウス・キー入力は使用せず、別作業のホストには変更を加えていません。
+
+根拠：`build/github-ci-path-red.json`、`github-ci-path-green.json`、`ci-audio-encoding-red.log`、`ci-audio-encoding-green.log`、`server-seek-probe/regression-before.log`、`server-seek-probe/regression-after.log`、`server-seek-sdk-build.log`、`server-seek-sdk/Testing/Temporary/LastTest.log`、`artifacts/release-validation-001/scene-backup.json`、`host/installed-host-results.json`、`host/story-results.json`、`host/ends/track-ends-results.json`。

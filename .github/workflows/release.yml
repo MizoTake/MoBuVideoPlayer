@@ -1,0 +1,141 @@
+name: Package local DLL into release draft
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag with a draft release containing the DLL and its metadata (vX.Y.Z)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  package-draft:
+    runs-on: windows-2022
+    timeout-minutes: 25
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Require an existing version tag and an unpublished release draft
+        id: draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RELEASE_TAG -cnotmatch '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
+              throw 'Select an exact version tag in vX.Y.Z format.'
+          }
+          $tagRef = & gh api "repos/$env:GH_REPO/git/ref/tags/$env:RELEASE_TAG" --jq '.ref'
+          if ($LASTEXITCODE -or $tagRef -cne "refs/tags/$env:RELEASE_TAG") { throw 'The requested tag does not exist.' }
+          $release = & gh release view $env:RELEASE_TAG --json databaseId,tagName,isDraft | ConvertFrom-Json
+          if ($LASTEXITCODE -or $release.tagName -cne $env:RELEASE_TAG -or -not $release.isDraft -or
+              [string]$release.databaseId -notmatch '^[1-9][0-9]*$') {
+              throw 'Create the draft and upload the local DLL input before running this workflow.'
+          }
+          "release_id=$($release.databaseId)" | Add-Content -LiteralPath $env:GITHUB_OUTPUT -Encoding utf8
+      - name: Check out the exact version tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          persist-credentials: false
+      - name: Enable the Windows Server media feature when required
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $media = Get-WindowsFeature -Name Server-Media-Foundation
+          if (-not $media) { throw 'Windows Server Media Foundation feature was not found.' }
+          $media | Select-Object Name, Installed, InstallState | ConvertTo-Json -Compress
+          if (-not $media.Installed) {
+              $result = Install-WindowsFeature -Name Server-Media-Foundation
+              if (-not $result.Success -or $result.RestartNeeded -ne 'No') {
+                  throw 'Media Foundation could not be enabled without restarting this CI runner.'
+              }
+          }
+          $media = Get-WindowsFeature -Name Server-Media-Foundation
+          $media | Select-Object Name, Installed, InstallState | ConvertTo-Json -Compress
+          if (-not $media.Installed) { throw 'Windows Server Media Foundation is still unavailable.' }
+      - name: Build and test the native media code without the proprietary SDK
+        run: ./scripts/ci-build.ps1 -Mode Core -BuildDirectory build/ci-core -PrepareHostedTools
+      - name: Download the exact local DLL and provenance assets
+        id: input
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          EXPECTED_RELEASE_ID: ${{ steps.draft.outputs.release_id }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $release = & gh release view $env:RELEASE_TAG --json databaseId,tagName,isDraft | ConvertFrom-Json
+          if ($LASTEXITCODE -or $release.tagName -cne $env:RELEASE_TAG -or -not $release.isDraft -or
+              [string]$release.databaseId -cne $env:EXPECTED_RELEASE_ID) {
+              throw 'The release is no longer the matching unpublished draft. Input download was stopped.'
+          }
+          $version = $env:RELEASE_TAG.Substring(1)
+          $name = "MoBuVideoPlayer-$version-Mobu2026-win64.dll"
+          & gh release download $env:RELEASE_TAG --pattern $name --pattern "$name.json" --dir build/release-input
+          if ($LASTEXITCODE) { throw 'Both the exact versioned DLL and its metadata are required on the draft release.' }
+          "plugin=build/release-input/$name" | Add-Content -LiteralPath $env:GITHUB_OUTPUT -Encoding utf8
+          "metadata=build/release-input/$name.json" | Add-Content -LiteralPath $env:GITHUB_OUTPUT -Encoding utf8
+      - name: Verify provenance and package the DLL with the install and uninstall scripts
+        id: package
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_PLUGIN: ${{ steps.input.outputs.plugin }}
+          RELEASE_METADATA: ${{ steps.input.outputs.metadata }}
+        run: ./scripts/ci-build.ps1 -Mode PackageInput -Tag $env:RELEASE_TAG -PluginPath $env:RELEASE_PLUGIN -MetadataPath $env:RELEASE_METADATA -BuildDirectory build/ci-package -OutputDirectory dist
+      - name: Add the verified ZIP and checksum to the same release draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_VERSION: ${{ steps.package.outputs.version }}
+          RELEASE_ARCHIVE: ${{ steps.package.outputs.archive }}
+          RELEASE_CHECKSUM: ${{ steps.package.outputs.checksum }}
+          RELEASE_NOTES: ${{ steps.package.outputs.notes }}
+          EXPECTED_RELEASE_ID: ${{ steps.draft.outputs.release_id }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Assert-CurrentDraft {
+              $release = & gh release view $env:RELEASE_TAG --json databaseId,tagName,isDraft,assets | ConvertFrom-Json
+              if ($LASTEXITCODE -or $release.tagName -cne $env:RELEASE_TAG -or -not $release.isDraft -or
+                  [string]$release.databaseId -cne $env:EXPECTED_RELEASE_ID) {
+                  throw 'The release is no longer the matching unpublished draft. Asset upload was stopped.'
+              }
+              $existingNames = @($release.assets | ForEach-Object { $_.name })
+              foreach ($path in @($env:RELEASE_ARCHIVE, $env:RELEASE_CHECKSUM)) {
+                  if ($existingNames -contains [IO.Path]::GetFileName($path)) {
+                      throw 'Remove the existing output assets from the draft manually, then rerun. This workflow does not replace or delete assets.'
+                  }
+              }
+          }
+          Assert-CurrentDraft
+          & gh release edit $env:RELEASE_TAG --title "MoBuVideoPlayer $env:RELEASE_VERSION" --notes-file $env:RELEASE_NOTES
+          if ($LASTEXITCODE) { throw 'Could not refresh the release draft notes.' }
+          Assert-CurrentDraft
+          & gh release upload $env:RELEASE_TAG $env:RELEASE_ARCHIVE $env:RELEASE_CHECKSUM
+          if ($LASTEXITCODE) { throw 'Could not attach the verified release package. Inspect the draft; remove partial output assets manually before rerunning.' }
+      - name: Retain public validation summaries
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-validation-results
+          path: |
+            build/ci-core/public-ci-summary.json
+            build/ci-core/public-source-results.json
+            build/ci-package/public-ci-summary.json
+            build/ci-package/public-source-results.json
+            build/ci-package/input-verification.json
+            build/ci-package/package-verification.json
+          if-no-files-found: warn
+          retention-days: 14

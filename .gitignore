@@ -1,0 +1,17 @@
+/build/
+/build-*/
+NativeVideoMedia/
+/dist/
+/artifacts/
+/.vs/
+*.user
+__pycache__/
+/OpenRealitySDK/
+/sdk/
+/publish/
+.env
+.env.*
+*.pfx
+*.p12
+*.key
+*.pem

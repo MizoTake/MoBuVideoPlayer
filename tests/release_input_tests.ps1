@@ -105,7 +105,10 @@ try {
         $fixture = New-InputTestFixture
         $preparedBytes = [IO.File]::ReadAllBytes($fixture.PluginPath)
         Assert-InputTest ((Get-InputTestHash $preparedBytes) -ceq (Get-InputTestHash ([IO.File]::ReadAllBytes($fixture.SourcePlugin)))) 'The prepared DLL differs from the selected DLL.'
-        $metadataText = [IO.File]::ReadAllText($fixture.MetadataPath, $utf8)
+        $metadataBytes = [IO.File]::ReadAllBytes($fixture.MetadataPath)
+        $metadataText = ([Text.UTF8Encoding]::new($false, $true)).GetString($metadataBytes)
+        Assert-InputTest (-not ($metadataBytes.Length -ge 3 -and $metadataBytes[0] -eq 0xef -and $metadataBytes[1] -eq 0xbb -and $metadataBytes[2] -eq 0xbf)) 'The public input metadata contains a UTF-8 BOM.'
+        Assert-InputTest (-not $metadataText.Contains("`r") -and $metadataText.EndsWith("`n")) 'The public input metadata must use LF and end with a newline.'
         $metadata = $metadataText | ConvertFrom-Json
         $expectedKeys = @('format_version', 'name', 'version', 'host', 'platform', 'dll_sha256', 'native_source_sha256', 'native_files')
         $actualKeys = @($metadata.PSObject.Properties.Name)

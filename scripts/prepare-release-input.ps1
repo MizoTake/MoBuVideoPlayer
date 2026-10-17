@@ -29,7 +29,8 @@ $metadata = [ordered]@{
 }
 if ([IO.Path]::GetFullPath($PluginPath) -ine $destination) { [IO.File]::Copy([IO.Path]::GetFullPath($PluginPath), $destination, $true) }
 if ((Get-ReleaseInputPluginHash -PluginPath $destination) -cne $hash) { throw 'The copied release DLL does not match the selected input.' }
-[IO.File]::WriteAllText($metadataPath, (($metadata | ConvertTo-Json -Depth 5) + "`n"), [Text.UTF8Encoding]::new($false))
+$metadataJson = ($metadata | ConvertTo-Json -Depth 5).Replace("`r`n", "`n").Replace("`r", "`n")
+[IO.File]::WriteAllText($metadataPath, ($metadataJson + "`n"), [Text.UTF8Encoding]::new($false))
 & (Join-Path $PSScriptRoot 'verify-release-input.ps1') -PluginPath $destination -MetadataPath $metadataPath -ExpectedVersion $source.Version -SourceRoot $SourceRoot | Out-Null
 Write-Output "Release DLL: $destination"
 Write-Output "Release metadata: $metadataPath"
